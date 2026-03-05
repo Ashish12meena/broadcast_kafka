@@ -8,9 +8,12 @@ import java.util.List;
 
 /**
  * Request body sent to messaging service's callback endpoint
- * after processing a batch of recipients.
+ * after processing a window of recipients (up to 80).
  *
  * POST /internal/broadcast/callbacks/message-results
+ *
+ * Called once per window (every 80 recipients), not once per full Kafka batch.
+ * Messaging Service performs a single bulk UPDATE for all results in one call.
  */
 @Data
 @Builder
@@ -19,8 +22,12 @@ public class MessageResultCallbackRequest {
     @JsonProperty("campaign_id")
     private Long campaignId;
 
-    @JsonProperty("waba_account_id")
-    private Long wabaAccountId;
+    /**
+     * The phone number that sent these messages.
+     * Identifies which phone number's window these results belong to.
+     */
+    @JsonProperty("phone_number_id")
+    private String phoneNumberId;
 
     private List<RecipientResult> results;
 
@@ -43,13 +50,14 @@ public class MessageResultCallbackRequest {
         private boolean success;
 
         /**
-         * Populated when success=true. wamid.xxx from Meta response.
+         * Populated when success=true. wamid from Meta response.
+         * Used by Messaging Service for deduplication on Kafka re-delivery.
          */
         @JsonProperty("provider_message_id")
         private String providerMessageId;
 
         /**
-         * Populated when success=false. Error message from Meta or internal.
+         * Populated when success=false.
          */
         @JsonProperty("error_code")
         private String errorCode;

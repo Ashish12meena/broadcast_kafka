@@ -17,12 +17,13 @@ import org.springframework.stereotype.Component;
  * Kafka consumer for outbound broadcast messages.
  *
  * Topic:   whatsapp.messages.outbound
- * Key:     waba_account_id
- * Value:   JSON { campaign_id, waba_account_id, payloads: [...] }
+ * Key:     phone_number_id  (partition affinity — all batches for same phone number
+ *                            land on same partition, isolating rate limits per phone)
+ * Value:   JSON { campaign_id, phone_number_id, access_token, payloads: [...] }
  *
- * Each Kafka message contains a BATCH of recipients for one campaign + WABA account.
- * The consumer deserializes and hands off to BatchCoordinatorService immediately.
- * All heavy lifting (Meta API calls, callbacks) happens in the coordinator.
+ * Each Kafka message contains a batch of up to 1000 recipients for one campaign
+ * and one phone number. The consumer deserializes and hands off to
+ * BatchCoordinatorService immediately — never blocks the consumer thread.
  */
 @Slf4j
 @Component
@@ -41,27 +42,25 @@ public class BroadcastMessageConsumer {
             @Payload String rawMessage,
             @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset,
-            @Header(KafkaHeaders.RECEIVED_KEY) String wabaAccountId,
+            @Header(KafkaHeaders.RECEIVED_KEY) String phoneNumberId,
             Acknowledgment acknowledgment) {
 
-        log.info("Received broadcast batch: wabaAccountId={} partition={} offset={}",
-                wabaAccountId, partition, offset);
+        log.info("Received broadcast batch: phoneNumberId={} partition={} offset={}",
+                phoneNumberId, partition, offset);
 
         try {
             BroadcastMessageEvent event = objectMapper.readValue(rawMessage, BroadcastMessageEvent.class);
 
-            log.info("Parsed broadcast event: campaignId={} wabaAccountId={} recipients={}",
+            log.info("Parsed broadcast event: campaignId={} phoneNumberId={} recipients={}",
                     event.getCampaignId(),
-                    event.getWabaAccountId(),
+                    event.getPhoneNumberId(),
                     event.getPayloads() != null ? event.getPayloads().size() : 0);
 
-            // Hand off to batch coordinator — returns immediately.
-            // Coordinator handles: Meta API calls, callbacks to messaging service, Kafka ack.
             batchCoordinator.addBatch(event, acknowledgment);
 
         } catch (Exception e) {
-            log.error("Failed to parse broadcast event: wabaAccountId={} partition={} offset={} error={}",
-                    wabaAccountId, partition, offset, e.getMessage(), e);
+            log.error("Failed to parse broadcast event: phoneNumberId={} partition={} offset={} error={}",
+                    phoneNumberId, partition, offset, e.getMessage(), e);
 
             // Acknowledge to avoid infinite reprocessing of a malformed message
             acknowledgment.acknowledge();

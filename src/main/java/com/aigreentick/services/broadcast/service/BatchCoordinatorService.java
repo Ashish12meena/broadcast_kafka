@@ -2,7 +2,6 @@ package com.aigreentick.services.broadcast.service;
 
 import com.aigreentick.services.broadcast.client.dto.MessageResultCallbackRequest;
 import com.aigreentick.services.broadcast.client.dto.MetaApiResponse;
-import com.aigreentick.services.broadcast.client.dto.WabaCredentials;
 import com.aigreentick.services.broadcast.client.service.MessagingCallbackClient;
 import com.aigreentick.services.broadcast.client.service.WhatsappClient;
 import com.aigreentick.services.broadcast.config.ConfigConstants;
@@ -12,7 +11,6 @@ import com.aigreentick.services.broadcast.kafka.event.BroadcastMessageEvent.Reci
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -26,228 +24,284 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Coordinates batch processing of broadcast messages.
  *
- * Flow per Kafka message (which is already a batch from messaging service):
- *   1. Consumer calls addBatch() — returns immediately
- *   2. A worker thread picks up the batch from the per-WABA queue
- *   3. Worker resolves WABA credentials (phone_number_id + access_token)
- *   4. Worker sends all recipients to Meta concurrently (bounded by semaphore)
- *   5. Kafka message is acknowledged
- *   6. Results are reported async to messaging service via HTTP callback
+ * phoneNumberId is the single identifier driving everything:
+ *   - PhoneQueue key   — one queue per phone number, one worker per queue
+ *   - Semaphore key    — Meta enforces 80 concurrent requests per phone number
+ *   - Meta API param   — POST /{phoneNumberId}/messages
  *
- * Semaphore keyed by wabaAccountId to enforce Meta's per-WABA concurrency limits.
+ * Processing model per Kafka message (up to 1000 recipients):
+ *   1. addBatch()      — enqueue, submit worker if none running. Returns immediately.
+ *   2. drainQueue()    — single worker per phone number drains batches sequentially.
+ *   3. processBatch()  — partition 1000 recipients into windows of WINDOW_SIZE (80).
+ *   4. sendWindow()    — send 80 to Meta concurrently, wait for all 80 responses.
+ *   5. reportWindow()  — immediately callback Messaging Service with those 80 results.
+ *   6. repeat 4-5      — until all windows done, then acknowledge Kafka offset.
  */
 @Slf4j
 @Service
 public class BatchCoordinatorService {
 
+    /**
+     * Recipients sent concurrently per window.
+     * Equals Meta's per-phone-number concurrent request limit.
+     */
+    private static final int WINDOW_SIZE = ConfigConstants.MAX_CONCURRENT_WHATSAPP_REQUESTS; // 80
+
     private final WhatsappClient whatsappClient;
     private final MessagingCallbackClient callbackClient;
-    private final WabaCredentialResolver credentialResolver;
     private final ExecutorService whatsappExecutor;
     private final ConcurrentHashMap<String, Semaphore> userSemaphores;
     private final ConcurrentHashMap<String, Long> semaphoreLastUsed;
 
-    // Per-WABA queues (lightweight, no dedicated threads)
-    private final ConcurrentHashMap<String, WabaQueue> wabaQueues = new ConcurrentHashMap<>();
+    // One queue per phoneNumberId — one worker drains each queue sequentially
+    private final ConcurrentHashMap<String, PhoneQueue> phoneQueues = new ConcurrentHashMap<>();
 
     private final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
 
     // Metrics
-    private final AtomicLong totalRecipientsProcessed = new AtomicLong(0);
     private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
+    private final AtomicLong totalWindowsProcessed = new AtomicLong(0);
+    private final AtomicLong totalRecipientsProcessed = new AtomicLong(0);
+    private final AtomicLong totalCallbacksSent = new AtomicLong(0);
 
     public BatchCoordinatorService(
             WhatsappClient whatsappClient,
             MessagingCallbackClient callbackClient,
-            WabaCredentialResolver credentialResolver,
             @Qualifier("whatsappExecutor") ExecutorService whatsappExecutor,
             ConcurrentHashMap<String, Semaphore> userSemaphores,
             ConcurrentHashMap<String, Long> semaphoreLastUsed) {
         this.whatsappClient = whatsappClient;
         this.callbackClient = callbackClient;
-        this.credentialResolver = credentialResolver;
         this.whatsappExecutor = whatsappExecutor;
         this.userSemaphores = userSemaphores;
         this.semaphoreLastUsed = semaphoreLastUsed;
     }
 
+    // ─── Entry Point ─────────────────────────────────────────────────────────
+
     /**
-     * Entry point from Kafka consumer. Returns immediately — never blocks the consumer thread.
+     * Called by Kafka consumer. Returns immediately — never blocks the consumer thread.
+     * Kafka offset is NOT acknowledged here — deferred until all windows complete.
      */
     public void addBatch(BroadcastMessageEvent event, Acknowledgment acknowledgment) {
         if (shutdownRequested.get()) {
-            log.warn("Shutdown requested — acknowledging without processing: campaignId={}", event.getCampaignId());
+            log.warn("Shutdown in progress — acknowledging without processing: campaignId={}",
+                    event.getCampaignId());
             acknowledgment.acknowledge();
             return;
         }
 
-        String wabaKey = String.valueOf(event.getWabaAccountId());
-
-        WabaQueue queue = wabaQueues.computeIfAbsent(wabaKey, k -> new WabaQueue(wabaKey));
+        String phoneNumberId = event.getPhoneNumberId();
+        PhoneQueue queue = phoneQueues.computeIfAbsent(phoneNumberId, PhoneQueue::new);
         queue.enqueue(new QueuedBatch(event, acknowledgment));
 
-        // Try to start a processing task if one isn't already running for this WABA
+        // Submit a worker only if none is running for this phone number
         if (queue.tryStartProcessing()) {
             whatsappExecutor.submit(() -> drainQueue(queue));
         }
     }
 
+    // ─── Queue Drain Loop ─────────────────────────────────────────────────────
+
     /**
-     * Worker loop: drains all pending batches for a single WABA account.
-     * Runs on whatsappExecutor thread pool.
+     * Worker loop: processes all pending batches for one phone number sequentially.
+     * Exactly one worker runs per phone number at any time — enforced by PhoneQueue.processing.
      */
-    private void drainQueue(WabaQueue queue) {
-        String wabaKey = queue.getWabaKey();
-        log.debug("Worker started for wabaKey={}", wabaKey);
+    private void drainQueue(PhoneQueue queue) {
+        String phoneNumberId = queue.getPhoneNumberId();
+        log.debug("Worker started: phoneNumberId={}", phoneNumberId);
 
         try {
             while (!shutdownRequested.get()) {
                 QueuedBatch batch = queue.poll();
 
                 if (batch == null) {
-                    // Queue appears empty — try to exit cleanly
+                    // Try to exit — guard against race where new batch arrives just after poll()
                     if (queue.tryStopProcessing()) {
                         if (queue.isEmpty()) {
-                            log.debug("Worker exiting for wabaKey={} — queue empty", wabaKey);
+                            log.debug("Worker exiting: phoneNumberId={} queue empty", phoneNumberId);
                             return;
                         }
-                        // Race: new item arrived between isEmpty() check and tryStop
+                        // New batch arrived between poll() and tryStop() — re-acquire and continue
                         if (queue.tryStartProcessing()) {
-                            continue; // restart loop
+                            continue;
                         }
-                        return; // another worker took over
+                        return; // Another worker took over
                     }
-                    return; // another worker is handling it
+                    return;
                 }
 
-                processBatch(wabaKey, batch);
+                processBatch(phoneNumberId, batch);
             }
         } catch (Exception e) {
-            log.error("Worker failed unexpectedly for wabaKey={}", wabaKey, e);
+            log.error("Worker failed unexpectedly: phoneNumberId={}", phoneNumberId, e);
         } finally {
             queue.forceStopProcessing();
         }
     }
 
+    // ─── Batch Processing ─────────────────────────────────────────────────────
+
     /**
-     * Process a single Kafka batch (one BroadcastMessageEvent = one Kafka message).
+     * Processes one Kafka message (up to 1000 recipients) as sequential windows of WINDOW_SIZE.
+     *
+     * Flow:
+     *   partition recipients into windows of 80
+     *   for each window:
+     *     → sendWindow()    — 80 concurrent Meta API calls, wait for all
+     *     → reportWindow()  — callback Messaging Service with 80 results immediately
+     *   → acknowledge Kafka offset once ALL windows done
      */
-    private void processBatch(String wabaKey, QueuedBatch queued) {
+    private void processBatch(String phoneNumberId, QueuedBatch queued) {
         BroadcastMessageEvent event = queued.event();
         long campaignId = event.getCampaignId();
+        String accessToken = event.getAccessToken();
         List<RecipientPayload> recipients = event.getPayloads();
+        int totalWindows = (int) Math.ceil((double) recipients.size() / WINDOW_SIZE);
         long batchStart = System.currentTimeMillis();
 
-        log.info("Processing batch: campaignId={} wabaAccountId={} recipients={}",
-                campaignId, event.getWabaAccountId(), recipients.size());
+        log.info("Processing batch: campaignId={} phoneNumberId={} recipients={} windows={}",
+                campaignId, phoneNumberId, recipients.size(), totalWindows);
+
+        int totalSuccess = 0;
+        int totalFailed = 0;
 
         try {
-            // Step 1: Resolve WABA credentials (phone_number_id + access_token)
-            WabaCredentials credentials = credentialResolver.resolve(event.getWabaAccountId());
+            List<List<RecipientPayload>> windows = partition(recipients, WINDOW_SIZE);
 
-            // Step 2: Send all recipients to Meta concurrently
-            List<RecipientResult> results = sendToMeta(wabaKey, credentials, recipients, campaignId);
+            for (int i = 0; i < windows.size(); i++) {
+                if (shutdownRequested.get()) {
+                    log.warn("Shutdown detected mid-batch: campaignId={} stoppingAtWindow={}/{}",
+                            campaignId, i + 1, totalWindows);
+                    break;
+                }
 
-            // Step 3: Acknowledge Kafka — message has been processed
+                List<RecipientPayload> window = windows.get(i);
+                log.debug("Window {}/{}: campaignId={} phoneNumberId={} size={}",
+                        i + 1, totalWindows, campaignId, phoneNumberId, window.size());
+
+                // Send this window to Meta — blocks until all responses received
+                List<RecipientResult> windowResults =
+                        sendWindow(phoneNumberId, accessToken, window, campaignId);
+
+                // Immediately callback Messaging Service with this window's results
+                reportWindowResults(campaignId, phoneNumberId, windowResults);
+
+                long successCount = windowResults.stream().filter(RecipientResult::success).count();
+                totalSuccess += (int) successCount;
+                totalFailed += windowResults.size() - (int) successCount;
+                totalWindowsProcessed.incrementAndGet();
+
+                log.debug("Window {}/{} done: campaignId={} success={} failed={}",
+                        i + 1, totalWindows, campaignId, successCount,
+                        windowResults.size() - successCount);
+            }
+
+            // Acknowledge Kafka only after ALL windows complete
+            // At-least-once: crash before ack = Kafka redelivers whole batch
+            // Messaging Service deduplicates via wamid (provider_message_id)
             queued.acknowledgment().acknowledge();
             log.debug("Kafka acknowledged: campaignId={}", campaignId);
 
-            // Step 4: Report results async to messaging service (fire-and-forget)
-            reportResultsAsync(event, results);
-
-            // Update metrics
             totalRecipientsProcessed.addAndGet(recipients.size());
             totalBatchesProcessed.incrementAndGet();
 
-            log.info("Batch completed: campaignId={} duration={}ms success={}/{}",
-                    campaignId,
-                    System.currentTimeMillis() - batchStart,
-                    results.stream().filter(RecipientResult::success).count(),
-                    results.size());
+            log.info("Batch complete: campaignId={} phoneNumberId={} duration={}ms success={} failed={}",
+                    campaignId, phoneNumberId, System.currentTimeMillis() - batchStart,
+                    totalSuccess, totalFailed);
 
         } catch (Exception e) {
-            log.error("Batch processing failed: campaignId={} error={}", campaignId, e.getMessage(), e);
-
-            // Acknowledge to prevent infinite retry on a persistent error
-            // Messaging service will detect missing callbacks and handle recovery
-            try {
-                queued.acknowledgment().acknowledge();
-            } catch (Exception ackEx) {
-                log.error("Failed to acknowledge failed batch: campaignId={}", campaignId, ackEx);
-            }
+            log.error("Batch failed: campaignId={} phoneNumberId={} error={}",
+                    campaignId, phoneNumberId, e.getMessage(), e);
+            safeAcknowledge(queued, campaignId);
         }
     }
 
+    // ─── Window Sending ───────────────────────────────────────────────────────
+
     /**
-     * Send all recipients in a batch to Meta's WhatsApp API concurrently.
-     * Bounded by semaphore to respect Meta's per-WABA concurrency limits.
+     * Sends one window (≤ WINDOW_SIZE recipients) to Meta fully concurrently.
+     *
+     * Semaphore:
+     *   - Keyed by phoneNumberId — Meta's 80 concurrent request limit is per phone number
+     *   - All permits acquired upfront (window.size() ≤ 80 = total permits)
+     *   - Safe because exactly one worker runs per phone number — no semaphore contention
+     *   - Released in finally — no semaphore leaks on timeout or exception
+     *
+     * @return results for all recipients in this window — never null, never partial
      */
-    private List<RecipientResult> sendToMeta(
-            String wabaKey,
-            WabaCredentials credentials,
-            List<RecipientPayload> recipients,
+    private List<RecipientResult> sendWindow(
+            String phoneNumberId,
+            String accessToken,
+            List<RecipientPayload> window,
             long campaignId) {
 
-        Semaphore semaphore = ExecutorConfig.getSemaphoreForUser(userSemaphores, semaphoreLastUsed, wabaKey);
-        List<CompletableFuture<RecipientResult>> futures = new ArrayList<>(recipients.size());
-        int acquiredPermits = 0;
+        Semaphore semaphore = ExecutorConfig.getSemaphoreForUser(
+                userSemaphores, semaphoreLastUsed, phoneNumberId);
+
+        int permits = window.size();
+        boolean permitsAcquired = false;
 
         try {
-            // Acquire permits upfront for the whole batch
-            for (int i = 0; i < recipients.size(); i++) {
-                semaphore.acquire();
-                acquiredPermits++;
-            }
+            semaphore.acquire(permits);
+            permitsAcquired = true;
 
-            log.debug("Acquired {} permits for wabaKey={} | available={}",
-                    acquiredPermits, wabaKey, semaphore.availablePermits());
-
-            // Submit concurrent Meta API calls
-            for (RecipientPayload recipient : recipients) {
-                final int idx = futures.size();
-                CompletableFuture<RecipientResult> future = CompletableFuture.supplyAsync(
-                        () -> callMeta(recipient, credentials, campaignId),
+            List<CompletableFuture<RecipientResult>> futures = new ArrayList<>(window.size());
+            for (RecipientPayload recipient : window) {
+                futures.add(CompletableFuture.supplyAsync(
+                        () -> callMeta(recipient, phoneNumberId, accessToken, campaignId),
                         whatsappExecutor
-                );
-                futures.add(future);
+                ));
             }
 
-            // Wait for all to complete (with timeout)
+            // Wait for all — 60s max per window
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                    .get(300, TimeUnit.SECONDS);
+                    .get(60, TimeUnit.SECONDS);
 
-            // Collect results
             List<RecipientResult> results = new ArrayList<>(futures.size());
             for (CompletableFuture<RecipientResult> f : futures) {
-                results.add(f.get());
+                results.add(f.get()); // already done, won't block
             }
             return results;
 
+        } catch (TimeoutException e) {
+            log.error("Window timed out: campaignId={} phoneNumberId={} windowSize={}",
+                    campaignId, phoneNumberId, window.size());
+            return buildErrorResults(window, "Window timeout after 60s");
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("sendToMeta interrupted: campaignId={}", campaignId);
-            return buildErrorResults(recipients, campaignId, "Interrupted");
+            log.error("Window interrupted: campaignId={} phoneNumberId={}", campaignId, phoneNumberId);
+            return buildErrorResults(window, "Interrupted");
 
-        } catch (Exception e) {
-            log.error("sendToMeta failed: campaignId={} error={}", campaignId, e.getMessage(), e);
-            return buildErrorResults(recipients, campaignId, e.getMessage());
+        } catch (ExecutionException e) {
+            log.error("Window execution failed: campaignId={} phoneNumberId={} error={}",
+                    campaignId, phoneNumberId, e.getCause().getMessage());
+            return buildErrorResults(window, e.getCause().getMessage());
 
         } finally {
-            // Always release permits
-            semaphore.release(acquiredPermits);
-            log.debug("Released {} permits for wabaKey={}", acquiredPermits, wabaKey);
+            if (permitsAcquired) {
+                semaphore.release(permits);
+            }
         }
     }
 
+    // ─── Single Meta API Call ─────────────────────────────────────────────────
+
     /**
-     * Single Meta API call for one recipient.
+     * One Meta API call for one recipient. Runs on whatsappExecutor.
+     * Never throws — always returns success or failure RecipientResult.
      */
-    private RecipientResult callMeta(RecipientPayload recipient, WabaCredentials credentials, long campaignId) {
+    private RecipientResult callMeta(
+            RecipientPayload recipient,
+            String phoneNumberId,
+            String accessToken,
+            long campaignId) {
         try {
             MetaApiResponse response = whatsappClient.sendMessage(
                     recipient.getRequestPayload(),
-                    credentials.getPhoneNumberId(),
-                    credentials.getAccessToken()
+                    phoneNumberId,
+                    accessToken
             );
 
             if (response != null && response.isSuccess()) {
@@ -257,37 +311,39 @@ public class BatchCoordinatorService {
                         recipient.getContactId(),
                         response.getProviderMessageId()
                 );
-            } else {
-                String errMsg = (response != null && response.getError() != null)
-                        ? response.getError().getMessage()
-                        : "Empty response from Meta";
-                String errCode = (response != null && response.getError() != null)
-                        ? String.valueOf(response.getError().getCode())
-                        : null;
-                return RecipientResult.failure(
-                        recipient.getRecipientId(),
-                        recipient.getMessageId(),
-                        recipient.getContactId(),
-                        errCode, errMsg
-                );
             }
 
-        } catch (Exception e) {
-            log.error("Meta API call failed: campaignId={} recipientId={} error={}",
-                    campaignId, recipient.getRecipientId(), e.getMessage());
+            String errCode = null;
+            String errMsg = "Empty response from Meta";
+            if (response != null && response.getError() != null) {
+                errCode = String.valueOf(response.getError().getCode());
+                errMsg = response.getError().getMessage();
+            }
             return RecipientResult.failure(
-                    recipient.getRecipientId(),
-                    recipient.getMessageId(),
-                    recipient.getContactId(),
-                    null, e.getMessage()
-            );
+                    recipient.getRecipientId(), recipient.getMessageId(),
+                    recipient.getContactId(), errCode, errMsg);
+
+        } catch (Exception e) {
+            log.error("Meta API call failed: campaignId={} recipientId={} phoneNumberId={} error={}",
+                    campaignId, recipient.getRecipientId(), phoneNumberId, e.getMessage());
+            return RecipientResult.failure(
+                    recipient.getRecipientId(), recipient.getMessageId(),
+                    recipient.getContactId(), null, e.getMessage());
         }
     }
 
+    // ─── Window Callback ──────────────────────────────────────────────────────
+
     /**
-     * Report batch results to messaging service asynchronously (fire-and-forget).
+     * Reports results for one window (≤ 80 recipients) to Messaging Service.
+     * Fire-and-forget — never blocks the window loop.
+     * Called after every window for faster status visibility.
      */
-    private void reportResultsAsync(BroadcastMessageEvent event, List<RecipientResult> results) {
+    private void reportWindowResults(
+            long campaignId,
+            String phoneNumberId,
+            List<RecipientResult> results) {
+
         List<MessageResultCallbackRequest.RecipientResult> callbackResults = results.stream()
                 .map(r -> MessageResultCallbackRequest.RecipientResult.builder()
                         .recipientId(r.recipientId())
@@ -300,82 +356,108 @@ public class BatchCoordinatorService {
                         .build())
                 .toList();
 
-        MessageResultCallbackRequest callbackRequest = MessageResultCallbackRequest.builder()
-                .campaignId(event.getCampaignId())
-                .wabaAccountId(event.getWabaAccountId())
+        MessageResultCallbackRequest request = MessageResultCallbackRequest.builder()
+                .campaignId(campaignId)
+                .phoneNumberId(phoneNumberId)
                 .results(callbackResults)
                 .build();
 
-        // Non-blocking — MessagingCallbackClientImpl uses subscribe() internally
-        callbackClient.reportResults(callbackRequest);
+        callbackClient.reportResults(request);
+        totalCallbacksSent.incrementAndGet();
     }
 
-    private List<RecipientResult> buildErrorResults(
-            List<RecipientPayload> recipients,
-            long campaignId,
-            String errorMessage) {
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    private <T> List<List<T>> partition(List<T> list, int maxSize) {
+        List<List<T>> partitions = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += maxSize) {
+            partitions.add(list.subList(i, Math.min(i + maxSize, list.size())));
+        }
+        return partitions;
+    }
+
+    private List<RecipientResult> buildErrorResults(List<RecipientPayload> recipients, String errorMessage) {
         return recipients.stream()
                 .map(r -> RecipientResult.failure(
-                        r.getRecipientId(),
-                        r.getMessageId(),
-                        r.getContactId(),
-                        null, errorMessage))
+                        r.getRecipientId(), r.getMessageId(),
+                        r.getContactId(), null, errorMessage))
                 .toList();
     }
 
-    // ─── Periodic Cleanup ────────────────────────────────────────────────────
+    private void safeAcknowledge(QueuedBatch queued, long campaignId) {
+        try {
+            queued.acknowledgment().acknowledge();
+        } catch (Exception e) {
+            log.error("Failed to acknowledge Kafka offset: campaignId={}", campaignId, e);
+        }
+    }
+
+    // ─── Cleanup ──────────────────────────────────────────────────────────────
 
     @Scheduled(fixedRate = 300_000) // Every 5 minutes
     public void cleanupEmptyQueues() {
         int removed = 0;
-        for (var entry : wabaQueues.entrySet()) {
-            WabaQueue q = entry.getValue();
+        for (var entry : phoneQueues.entrySet()) {
+            PhoneQueue q = entry.getValue();
             if (q.isEmpty() && !q.isProcessing()) {
-                if (wabaQueues.remove(entry.getKey(), q)) {
+                if (phoneQueues.remove(entry.getKey(), q)) {
                     removed++;
                 }
             }
         }
         if (removed > 0) {
-            log.info("Cleaned up {} empty WABA queues. Remaining: {}", removed, wabaQueues.size());
+            log.info("Cleaned up {} empty phone queues. Remaining: {}", removed, phoneQueues.size());
         }
     }
 
-    // ─── Graceful Shutdown ───────────────────────────────────────────────────
+    // ─── Graceful Shutdown ────────────────────────────────────────────────────
 
     @PreDestroy
     public void shutdown() {
         log.info("BatchCoordinatorService shutting down...");
         shutdownRequested.set(true);
 
-        log.info("Shutdown complete. totalRecipients={} totalBatches={}",
-                totalRecipientsProcessed.get(), totalBatchesProcessed.get());
+        whatsappExecutor.shutdown();
+        try {
+            if (!whatsappExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                log.warn("whatsappExecutor did not terminate in 60s — forcing shutdown");
+                whatsappExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            whatsappExecutor.shutdownNow();
+        }
+
+        log.info("Shutdown complete. batches={} windows={} recipients={} callbacks={}",
+                totalBatchesProcessed.get(), totalWindowsProcessed.get(),
+                totalRecipientsProcessed.get(), totalCallbacksSent.get());
     }
 
-    // ─── Stats ───────────────────────────────────────────────────────────────
+    // ─── Stats ────────────────────────────────────────────────────────────────
 
     public BatchStats getStats() {
         int activeQueues = 0, processingQueues = 0, totalPending = 0;
-        for (WabaQueue q : wabaQueues.values()) {
+        for (PhoneQueue q : phoneQueues.values()) {
             if (!q.isEmpty()) { activeQueues++; totalPending += q.size(); }
             if (q.isProcessing()) processingQueues++;
         }
         return new BatchStats(
-                wabaQueues.size(), activeQueues, processingQueues, totalPending,
-                totalRecipientsProcessed.get(), totalBatchesProcessed.get()
+                phoneQueues.size(), activeQueues, processingQueues, totalPending,
+                totalBatchesProcessed.get(), totalWindowsProcessed.get(),
+                totalRecipientsProcessed.get(), totalCallbacksSent.get()
         );
     }
 
-    // ─── Inner Types ─────────────────────────────────────────────────────────
+    // ─── Inner Types ──────────────────────────────────────────────────────────
 
-    private static class WabaQueue {
-        private final String wabaKey;
+    private static class PhoneQueue {
+        private final String phoneNumberId;
         private final ConcurrentLinkedQueue<QueuedBatch> queue = new ConcurrentLinkedQueue<>();
         private final AtomicBoolean processing = new AtomicBoolean(false);
 
-        WabaQueue(String wabaKey) { this.wabaKey = wabaKey; }
+        PhoneQueue(String phoneNumberId) { this.phoneNumberId = phoneNumberId; }
 
-        String getWabaKey() { return wabaKey; }
+        String getPhoneNumberId() { return phoneNumberId; }
         void enqueue(QueuedBatch b) { queue.offer(b); }
         QueuedBatch poll() { return queue.poll(); }
         boolean isEmpty() { return queue.isEmpty(); }
@@ -397,16 +479,18 @@ public class BatchCoordinatorService {
             String errorCode,
             String errorMessage) {
 
-        static RecipientResult success(Long recipientId, Long messageId, Long contactId, String providerMessageId) {
-            return new RecipientResult(recipientId, messageId, contactId, true, providerMessageId, null, null);
+        static RecipientResult success(Long recipientId, Long messageId, Long contactId, String wamid) {
+            return new RecipientResult(recipientId, messageId, contactId, true, wamid, null, null);
         }
 
-        static RecipientResult failure(Long recipientId, Long messageId, Long contactId, String errorCode, String errorMessage) {
+        static RecipientResult failure(Long recipientId, Long messageId, Long contactId,
+                                       String errorCode, String errorMessage) {
             return new RecipientResult(recipientId, messageId, contactId, false, null, errorCode, errorMessage);
         }
     }
 
     public record BatchStats(
-            int totalQueues, int activeQueues, int processingQueues,
-            int totalPending, long totalRecipientsProcessed, long totalBatchesProcessed) {}
+            int totalQueues, int activeQueues, int processingQueues, int totalPending,
+            long totalBatchesProcessed, long totalWindowsProcessed,
+            long totalRecipientsProcessed, long totalCallbacksSent) {}
 }
