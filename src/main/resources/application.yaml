@@ -1,6 +1,10 @@
 spring:
   application:
     name: broadcast
+  profiles:
+    include:
+      # - kafka      # always include kafka
+      - mock       # kafka not active by default
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
@@ -10,7 +14,6 @@ spring:
       enable-auto-commit: false
       max-poll-records: 100
 
-# ── Kafka Topics ─────────────────────────────────────────
 kafka:
   topics:
     outbound-messages: whatsapp.messages.outbound

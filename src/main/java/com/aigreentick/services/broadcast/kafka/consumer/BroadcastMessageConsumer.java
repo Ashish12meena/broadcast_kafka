@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.ObjectMapper;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -27,6 +28,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
+@Profile("kafka")
 @RequiredArgsConstructor
 public class BroadcastMessageConsumer {
 
