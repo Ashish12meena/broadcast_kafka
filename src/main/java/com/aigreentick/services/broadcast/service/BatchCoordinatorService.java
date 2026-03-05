@@ -1,571 +1,412 @@
 package com.aigreentick.services.broadcast.service;
 
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-
+import com.aigreentick.services.broadcast.client.dto.MessageResultCallbackRequest;
+import com.aigreentick.services.broadcast.client.dto.MetaApiResponse;
+import com.aigreentick.services.broadcast.client.dto.WabaCredentials;
+import com.aigreentick.services.broadcast.client.service.MessagingCallbackClient;
+import com.aigreentick.services.broadcast.client.service.WhatsappClient;
+import com.aigreentick.services.broadcast.config.ConfigConstants;
+import com.aigreentick.services.broadcast.config.ExecutorConfig;
+import com.aigreentick.services.broadcast.kafka.event.BroadcastMessageEvent;
+import com.aigreentick.services.broadcast.kafka.event.BroadcastMessageEvent.RecipientPayload;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
-import jakarta.annotation.PreDestroy;
-import lombok.extern.slf4j.Slf4j;
-
+/**
+ * Coordinates batch processing of broadcast messages.
+ *
+ * Flow per Kafka message (which is already a batch from messaging service):
+ *   1. Consumer calls addBatch() — returns immediately
+ *   2. A worker thread picks up the batch from the per-WABA queue
+ *   3. Worker resolves WABA credentials (phone_number_id + access_token)
+ *   4. Worker sends all recipients to Meta concurrently (bounded by semaphore)
+ *   5. Kafka message is acknowledged
+ *   6. Results are reported async to messaging service via HTTP callback
+ *
+ * Semaphore keyed by wabaAccountId to enforce Meta's per-WABA concurrency limits.
+ */
 @Slf4j
 @Service
 public class BatchCoordinatorService {
 
     private final WhatsappClient whatsappClient;
-    private final ObjectMapper objectMapper;
+    private final MessagingCallbackClient callbackClient;
+    private final WabaCredentialResolver credentialResolver;
     private final ExecutorService whatsappExecutor;
     private final ConcurrentHashMap<String, Semaphore> userSemaphores;
     private final ConcurrentHashMap<String, Long> semaphoreLastUsed;
 
-    @Value("${batch.size:80}")
-    private int batchSize;
-
-    // Per-user queues (lightweight, no threads)
-    private final ConcurrentHashMap<String, UserQueue> userQueues = new ConcurrentHashMap<>();
+    // Per-WABA queues (lightweight, no dedicated threads)
+    private final ConcurrentHashMap<String, WabaQueue> wabaQueues = new ConcurrentHashMap<>();
 
     private final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
 
     // Metrics
-    private final AtomicLong totalProcessed = new AtomicLong(0);
-    private final AtomicLong totalBatches = new AtomicLong(0);
+    private final AtomicLong totalRecipientsProcessed = new AtomicLong(0);
+    private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
 
-    public BatchCoordinator(
+    public BatchCoordinatorService(
             WhatsappClient whatsappClient,
-            ReportServiceImpl reportService,
-            ObjectMapper objectMapper,
+            MessagingCallbackClient callbackClient,
+            WabaCredentialResolver credentialResolver,
             @Qualifier("whatsappExecutor") ExecutorService whatsappExecutor,
             ConcurrentHashMap<String, Semaphore> userSemaphores,
             ConcurrentHashMap<String, Long> semaphoreLastUsed) {
         this.whatsappClient = whatsappClient;
-        this.reportService = reportService;
-        this.objectMapper = objectMapper;
+        this.callbackClient = callbackClient;
+        this.credentialResolver = credentialResolver;
         this.whatsappExecutor = whatsappExecutor;
         this.userSemaphores = userSemaphores;
         this.semaphoreLastUsed = semaphoreLastUsed;
     }
 
     /**
-     * Add event to user's queue. Never blocks.
-     * Submits processing task if not already running.
+     * Entry point from Kafka consumer. Returns immediately — never blocks the consumer thread.
      */
-    public void addEventToBatch(BroadcastReportEvent event, Acknowledgment acknowledgment) {
-
+    public void addBatch(BroadcastMessageEvent event, Acknowledgment acknowledgment) {
         if (shutdownRequested.get()) {
-            log.warn("Shutdown requested, acknowledging without processing");
+            log.warn("Shutdown requested — acknowledging without processing: campaignId={}", event.getCampaignId());
             acknowledgment.acknowledge();
             return;
         }
 
-        String phoneNumberId = event.getPhoneNumberId();
+        String wabaKey = String.valueOf(event.getWabaAccountId());
 
-        // Get or create user queue
-        UserQueue userQueue = userQueues.computeIfAbsent(
-                phoneNumberId,
-                k -> new UserQueue(phoneNumberId));
+        WabaQueue queue = wabaQueues.computeIfAbsent(wabaKey, k -> new WabaQueue(wabaKey));
+        queue.enqueue(new QueuedBatch(event, acknowledgment));
 
-        // Add item to queue (non-blocking)
-        userQueue.addItem(new BatchItem(event, acknowledgment));
-
-        // Try to start processing if not already running
-        if (userQueue.tryStartProcessing()) {
-            submitProcessingTask(userQueue);
+        // Try to start a processing task if one isn't already running for this WABA
+        if (queue.tryStartProcessing()) {
+            whatsappExecutor.submit(() -> drainQueue(queue));
         }
     }
 
     /**
-     * Submit processing task to thread pool
+     * Worker loop: drains all pending batches for a single WABA account.
+     * Runs on whatsappExecutor thread pool.
      */
-    private void submitProcessingTask(UserQueue userQueue) {
-        whatsappExecutor.submit(() -> processUserQueue(userQueue));
-    }
-
-    /**
-     * Process all pending items for a user.
-     * Runs on pooled thread, exits when queue is empty.
-     */
-    private void processUserQueue(UserQueue userQueue) {
-        String phoneNumberId = userQueue.getPhoneNumberId();
-
-        log.debug("Processing task started for phoneNumberId={}", phoneNumberId);
+    private void drainQueue(WabaQueue queue) {
+        String wabaKey = queue.getWabaKey();
+        log.debug("Worker started for wabaKey={}", wabaKey);
 
         try {
             while (!shutdownRequested.get()) {
-                // Collect batch from queue
-                List<BatchItem> batch = collectBatch(userQueue);
+                QueuedBatch batch = queue.poll();
 
-                if (batch.isEmpty()) {
-                    // Queue is empty, try to exit
-                    if (userQueue.tryStopProcessing()) {
-                        // Successfully marked as not processing
-                        // Final check: if queue still empty, exit
-                        if (userQueue.isEmpty()) {
-                            log.debug("Processing task exiting for phoneNumberId={} (queue empty)",
-                                    phoneNumberId);
+                if (batch == null) {
+                    // Queue appears empty — try to exit cleanly
+                    if (queue.tryStopProcessing()) {
+                        if (queue.isEmpty()) {
+                            log.debug("Worker exiting for wabaKey={} — queue empty", wabaKey);
                             return;
-                        } else {
-                            // Race condition: new items arrived
-                            // Restart processing
-                            if (userQueue.tryStartProcessing()) {
-                                log.debug("Restarting processing for phoneNumberId={} (new items arrived)",
-                                        phoneNumberId);
-                                continue;
-                            } else {
-                                // Another task started, we can exit
-                                return;
-                            }
                         }
-                    } else {
-                        // Someone else is handling it
-                        return;
+                        // Race: new item arrived between isEmpty() check and tryStop
+                        if (queue.tryStartProcessing()) {
+                            continue; // restart loop
+                        }
+                        return; // another worker took over
                     }
+                    return; // another worker is handling it
                 }
 
-                // Process the batch
-                processBatch(phoneNumberId, batch);
+                processBatch(wabaKey, batch);
             }
         } catch (Exception e) {
-            log.error("Processing task failed for phoneNumberId={}", phoneNumberId, e);
+            log.error("Worker failed unexpectedly for wabaKey={}", wabaKey, e);
         } finally {
-            // Ensure processing flag is cleared on unexpected exit
-            userQueue.forceStopProcessing();
+            queue.forceStopProcessing();
         }
     }
 
     /**
-     * Collect items from queue into a batch (up to batchSize)
+     * Process a single Kafka batch (one BroadcastMessageEvent = one Kafka message).
      */
-    private List<BatchItem> collectBatch(UserQueue userQueue) {
-        List<BatchItem> batch = new ArrayList<>();
+    private void processBatch(String wabaKey, QueuedBatch queued) {
+        BroadcastMessageEvent event = queued.event();
+        long campaignId = event.getCampaignId();
+        List<RecipientPayload> recipients = event.getPayloads();
+        long batchStart = System.currentTimeMillis();
 
-        BatchItem item;
-        while (batch.size() < batchSize && (item = userQueue.poll()) != null) {
-            batch.add(item);
-        }
-
-        return batch;
-    }
-
-    /**
-     * Process a batch of items
-     */
-    private void processBatch(String phoneNumberId, List<BatchItem> batch) {
-        long startTime = System.currentTimeMillis();
-
-        log.info("=== Processing Batch ===");
-        log.info("PhoneNumberId: {} | Size: {} | Pending: {}",
-                phoneNumberId, batch.size(), userQueues.get(phoneNumberId).size());
+        log.info("Processing batch: campaignId={} wabaAccountId={} recipients={}",
+                campaignId, event.getWabaAccountId(), recipients.size());
 
         try {
-            // STAGE 1: WhatsApp API Calls
-            List<WhatsAppResult> results = sendWhatsAppBatch(phoneNumberId, batch);
+            // Step 1: Resolve WABA credentials (phone_number_id + access_token)
+            WabaCredentials credentials = credentialResolver.resolve(event.getWabaAccountId());
 
-            // STAGE 2: Acknowledge Kafka messages
-            acknowledgeAllMessages(batch);
+            // Step 2: Send all recipients to Meta concurrently
+            List<RecipientResult> results = sendToMeta(wabaKey, credentials, recipients, campaignId);
 
+            // Step 3: Acknowledge Kafka — message has been processed
+            queued.acknowledgment().acknowledge();
+            log.debug("Kafka acknowledged: campaignId={}", campaignId);
 
-            // STAGE 3: Database Update
-            batchUpdateDatabase(batch, results);
-
+            // Step 4: Report results async to messaging service (fire-and-forget)
+            reportResultsAsync(event, results);
 
             // Update metrics
-            totalProcessed.addAndGet(batch.size());
-            totalBatches.incrementAndGet();
+            totalRecipientsProcessed.addAndGet(recipients.size());
+            totalBatchesProcessed.incrementAndGet();
 
-            long duration = System.currentTimeMillis() - startTime;
-            log.info("=== Batch Completed ===");
-            log.info("PhoneNumberId: {} | Items: {} | Duration: {}ms",
-                    phoneNumberId, batch.size(), duration);
+            log.info("Batch completed: campaignId={} duration={}ms success={}/{}",
+                    campaignId,
+                    System.currentTimeMillis() - batchStart,
+                    results.stream().filter(RecipientResult::success).count(),
+                    results.size());
 
         } catch (Exception e) {
-            log.error("Batch processing failed for phoneNumberId={}", phoneNumberId, e);
-            handleBatchFailure(batch, e);
+            log.error("Batch processing failed: campaignId={} error={}", campaignId, e.getMessage(), e);
+
+            // Acknowledge to prevent infinite retry on a persistent error
+            // Messaging service will detect missing callbacks and handle recovery
+            try {
+                queued.acknowledgment().acknowledge();
+            } catch (Exception ackEx) {
+                log.error("Failed to acknowledge failed batch: campaignId={}", campaignId, ackEx);
+            }
         }
     }
 
     /**
-     * STAGE 1: Send WhatsApp requests concurrently
+     * Send all recipients in a batch to Meta's WhatsApp API concurrently.
+     * Bounded by semaphore to respect Meta's per-WABA concurrency limits.
      */
-    private List<WhatsAppResult> sendWhatsAppBatch(String phoneNumberId, List<BatchItem> batch) {
-        long stageStart = System.currentTimeMillis();
+    private List<RecipientResult> sendToMeta(
+            String wabaKey,
+            WabaCredentials credentials,
+            List<RecipientPayload> recipients,
+            long campaignId) {
 
-        Semaphore userSemaphore = ExecutorConfig.getSemaphoreForUser(
-                userSemaphores, semaphoreLastUsed, phoneNumberId);
-
-        List<Semaphore> acquiredSemaphores = new ArrayList<>();
-        List<CompletableFuture<WhatsAppResult>> futures = new ArrayList<>();
+        Semaphore semaphore = ExecutorConfig.getSemaphoreForUser(userSemaphores, semaphoreLastUsed, wabaKey);
+        List<CompletableFuture<RecipientResult>> futures = new ArrayList<>(recipients.size());
+        int acquiredPermits = 0;
 
         try {
-            log.debug("Stage 1: Acquiring {} permits", batch.size());
-
-            // Acquire permits
-            for (int i = 0; i < batch.size(); i++) {
-                userSemaphore.acquire();
-                acquiredSemaphores.add(userSemaphore);
+            // Acquire permits upfront for the whole batch
+            for (int i = 0; i < recipients.size(); i++) {
+                semaphore.acquire();
+                acquiredPermits++;
             }
 
-            log.debug("Stage 1: Permits acquired. Available: {}",
-                    userSemaphore.availablePermits());
+            log.debug("Acquired {} permits for wabaKey={} | available={}",
+                    acquiredPermits, wabaKey, semaphore.availablePermits());
 
-            // Submit concurrent WhatsApp requests using the executor
-            for (BatchItem item : batch) {
-                CompletableFuture<WhatsAppResult> future = CompletableFuture
-                        .supplyAsync(() -> sendSingleWhatsAppMessage(item.event()), whatsappExecutor);
+            // Submit concurrent Meta API calls
+            for (RecipientPayload recipient : recipients) {
+                final int idx = futures.size();
+                CompletableFuture<RecipientResult> future = CompletableFuture.supplyAsync(
+                        () -> callMeta(recipient, credentials, campaignId),
+                        whatsappExecutor
+                );
                 futures.add(future);
             }
 
-            // Wait for all responses
+            // Wait for all to complete (with timeout)
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                     .get(300, TimeUnit.SECONDS);
 
             // Collect results
-            List<WhatsAppResult> results = new ArrayList<>();
-            for (CompletableFuture<WhatsAppResult> future : futures) {
-                results.add(future.get());
+            List<RecipientResult> results = new ArrayList<>(futures.size());
+            for (CompletableFuture<RecipientResult> f : futures) {
+                results.add(f.get());
             }
-
-            long stageDuration = System.currentTimeMillis() - stageStart;
-            log.info("Stage 1: Completed. Duration: {}ms | Success: {}/{}",
-                    stageDuration,
-                    results.stream().filter(WhatsAppResult::success).count(),
-                    results.size());
-
             return results;
 
-        } catch (Exception e) {
-            log.error("Stage 1: Failed for phoneNumberId={}", phoneNumberId, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("sendToMeta interrupted: campaignId={}", campaignId);
+            return buildErrorResults(recipients, campaignId, "Interrupted");
 
-            // Create error results
-            List<WhatsAppResult> errorResults = new ArrayList<>();
-            for (BatchItem item : batch) {
-                errorResults.add(new WhatsAppResult(
-                        item.event().getBroadcastId(),
-                        item.event().getRecipient(),
-                        null,
-                        false,
-                        "Batch error: " + e.getMessage()));
-            }
-            return errorResults;
+        } catch (Exception e) {
+            log.error("sendToMeta failed: campaignId={} error={}", campaignId, e.getMessage(), e);
+            return buildErrorResults(recipients, campaignId, e.getMessage());
 
         } finally {
-            // Release all permits
-            for (Semaphore sem : acquiredSemaphores) {
-                sem.release();
-            }
-            log.debug("Stage 1: Released {} permits", acquiredSemaphores.size());
+            // Always release permits
+            semaphore.release(acquiredPermits);
+            log.debug("Released {} permits for wabaKey={}", acquiredPermits, wabaKey);
         }
     }
 
     /**
-     * Send single WhatsApp message
+     * Single Meta API call for one recipient.
      */
-    private WhatsAppResult sendSingleWhatsAppMessage(BroadcastReportEvent event) {
+    private RecipientResult callMeta(RecipientPayload recipient, WabaCredentials credentials, long campaignId) {
         try {
-            FacebookApiResponse<SendTemplateMessageResponse> response = whatsappClient.sendMessage(
-                    event.getPayload(),
-                    event.getPhoneNumberId(),
-                    event.getAccessToken());
+            MetaApiResponse response = whatsappClient.sendMessage(
+                    recipient.getRequestPayload(),
+                    credentials.getPhoneNumberId(),
+                    credentials.getAccessToken()
+            );
 
-            return new WhatsAppResult(
-                    event.getBroadcastId(),
-                    event.getRecipient(),
-                    response,
-                    response.isSuccess(),
-                    null);
+            if (response != null && response.isSuccess()) {
+                return RecipientResult.success(
+                        recipient.getRecipientId(),
+                        recipient.getMessageId(),
+                        recipient.getContactId(),
+                        response.getProviderMessageId()
+                );
+            } else {
+                String errMsg = (response != null && response.getError() != null)
+                        ? response.getError().getMessage()
+                        : "Empty response from Meta";
+                String errCode = (response != null && response.getError() != null)
+                        ? String.valueOf(response.getError().getCode())
+                        : null;
+                return RecipientResult.failure(
+                        recipient.getRecipientId(),
+                        recipient.getMessageId(),
+                        recipient.getContactId(),
+                        errCode, errMsg
+                );
+            }
 
         } catch (Exception e) {
-            log.error("WhatsApp request failed: recipient={}", event.getRecipient(), e);
-            return new WhatsAppResult(
-                    event.getBroadcastId(),
-                    event.getRecipient(),
-                    null,
-                    false,
-                    e.getMessage());
+            log.error("Meta API call failed: campaignId={} recipientId={} error={}",
+                    campaignId, recipient.getRecipientId(), e.getMessage());
+            return RecipientResult.failure(
+                    recipient.getRecipientId(),
+                    recipient.getMessageId(),
+                    recipient.getContactId(),
+                    null, e.getMessage()
+            );
         }
     }
 
     /**
-     * STAGE 2: Batch database update
+     * Report batch results to messaging service asynchronously (fire-and-forget).
      */
-    private void batchUpdateDatabase(List<BatchItem> batch, List<WhatsAppResult> results) {
-        long stageStart = System.currentTimeMillis();
+    private void reportResultsAsync(BroadcastMessageEvent event, List<RecipientResult> results) {
+        List<MessageResultCallbackRequest.RecipientResult> callbackResults = results.stream()
+                .map(r -> MessageResultCallbackRequest.RecipientResult.builder()
+                        .recipientId(r.recipientId())
+                        .messageId(r.messageId())
+                        .contactId(r.contactId())
+                        .success(r.success())
+                        .providerMessageId(r.providerMessageId())
+                        .errorCode(r.errorCode())
+                        .errorMessage(r.errorMessage())
+                        .build())
+                .toList();
 
-        List<DatabaseUpdate> updates = new ArrayList<>();
+        MessageResultCallbackRequest callbackRequest = MessageResultCallbackRequest.builder()
+                .campaignId(event.getCampaignId())
+                .wabaAccountId(event.getWabaAccountId())
+                .results(callbackResults)
+                .build();
 
-        for (int i = 0; i < batch.size(); i++) {
-            BatchItem item = batch.get(i);
-            WhatsAppResult result = results.get(i);
-
-            try {
-                String responseJson = objectMapper.writeValueAsString(result.response());
-                String status;
-                String messageStatusValue;
-                String whatsappMessageId = null;
-
-                if (result.success() && result.response() != null) {
-                    status = "sent";
-                    SendTemplateMessageResponse data = result.response().getData();
-                    if (data != null && data.getMessages() != null &&
-                            !data.getMessages().isEmpty()) {
-                        var msg = data.getMessages().get(0);
-                        whatsappMessageId = msg.getId();
-                        messageStatusValue = msg.getMessageStatus() != null ? msg.getMessageStatus() : "sent";
-                    } else {
-                        messageStatusValue = "sent";
-                    }
-                } else {
-                    status = "failed";
-                    messageStatusValue = result.errorMessage() != null ? result.errorMessage() : "Failed";
-                }
-
-                updates.add(new DatabaseUpdate(
-                        item.event().getBroadcastId(),
-                        item.event().getRecipient(),
-                        responseJson,
-                        status,
-                        messageStatusValue,
-                        whatsappMessageId,
-                        item.event().getPayload(),
-                        LocalDateTime.now()));
-
-            } catch (Exception e) {
-                log.error("Failed to prepare update: recipient={}",
-                        item.event().getRecipient(), e);
-            }
-        }
-
-        try {
-            int successCount = reportService.batchUpdateReports(updates);
-
-            long stageDuration = System.currentTimeMillis() - stageStart;
-            log.info("Stage 2: Completed. Duration: {}ms | Updated: {}/{}",
-                    stageDuration, successCount, updates.size());
-
-        } catch (Exception e) {
-            log.error("Stage 2: Failed", e);
-            throw e;
-        }
+        // Non-blocking — MessagingCallbackClientImpl uses subscribe() internally
+        callbackClient.reportResults(callbackRequest);
     }
 
-    /**
-     * STAGE 3: Acknowledge Kafka messages
-     */
-    private void acknowledgeAllMessages(List<BatchItem> batch) {
-        for (BatchItem item : batch) {
-            try {
-                item.acknowledgment().acknowledge();
-            } catch (Exception e) {
-                log.error("Failed to acknowledge: recipient={}",
-                        item.event().getRecipient(), e);
-            }
-        }
+    private List<RecipientResult> buildErrorResults(
+            List<RecipientPayload> recipients,
+            long campaignId,
+            String errorMessage) {
+        return recipients.stream()
+                .map(r -> RecipientResult.failure(
+                        r.getRecipientId(),
+                        r.getMessageId(),
+                        r.getContactId(),
+                        null, errorMessage))
+                .toList();
     }
 
-    /**
-     * Handle batch failure
-     */
-    private void handleBatchFailure(List<BatchItem> batch, Exception error) {
-        log.error("Handling batch failure for {} items", batch.size());
+    // ─── Periodic Cleanup ────────────────────────────────────────────────────
 
-        for (BatchItem item : batch) {
-            try {
-                item.acknowledgment().acknowledge();
-            } catch (Exception e) {
-                log.error("Failed to acknowledge failed message", e);
-            }
-        }
-    }
-
-    /**
-     * Cleanup empty queues periodically
-     */
-    @Scheduled(fixedRate = 300000) // Every 5 minutes
+    @Scheduled(fixedRate = 300_000) // Every 5 minutes
     public void cleanupEmptyQueues() {
         int removed = 0;
-
-        for (var entry : userQueues.entrySet()) {
-            UserQueue queue = entry.getValue();
-
-            // Only remove if empty and not processing
-            if (queue.isEmpty() && !queue.isProcessing()) {
-                if (userQueues.remove(entry.getKey(), queue)) {
+        for (var entry : wabaQueues.entrySet()) {
+            WabaQueue q = entry.getValue();
+            if (q.isEmpty() && !q.isProcessing()) {
+                if (wabaQueues.remove(entry.getKey(), q)) {
                     removed++;
                 }
             }
         }
-
         if (removed > 0) {
-            log.info("Cleaned up {} empty user queues. Remaining: {}", removed, userQueues.size());
+            log.info("Cleaned up {} empty WABA queues. Remaining: {}", removed, wabaQueues.size());
         }
     }
 
-    /**
-     * Graceful shutdown
-     */
+    // ─── Graceful Shutdown ───────────────────────────────────────────────────
+
     @PreDestroy
     public void shutdown() {
-        log.info("Shutting down BatchCoordinator...");
+        log.info("BatchCoordinatorService shutting down...");
         shutdownRequested.set(true);
 
-        // Process remaining items in all queues
-        for (UserQueue queue : userQueues.values()) {
-            List<BatchItem> remaining = new ArrayList<>();
-            BatchItem item;
-            while ((item = queue.poll()) != null) {
-                remaining.add(item);
-            }
-
-            if (!remaining.isEmpty()) {
-                log.info("Processing {} remaining items for phoneNumberId={}",
-                        remaining.size(), queue.getPhoneNumberId());
-                processBatch(queue.getPhoneNumberId(), remaining);
-            }
-        }
-
-        log.info("BatchCoordinator shutdown complete. Total processed: {}, Total batches: {}",
-                totalProcessed.get(), totalBatches.get());
+        log.info("Shutdown complete. totalRecipients={} totalBatches={}",
+                totalRecipientsProcessed.get(), totalBatchesProcessed.get());
     }
 
-    /**
-     * Get statistics
-     */
+    // ─── Stats ───────────────────────────────────────────────────────────────
+
     public BatchStats getStats() {
-        int activeQueues = 0;
-        int processingQueues = 0;
-        int totalPending = 0;
-
-        for (UserQueue queue : userQueues.values()) {
-            if (!queue.isEmpty()) {
-                activeQueues++;
-                totalPending += queue.size();
-            }
-            if (queue.isProcessing()) {
-                processingQueues++;
-            }
+        int activeQueues = 0, processingQueues = 0, totalPending = 0;
+        for (WabaQueue q : wabaQueues.values()) {
+            if (!q.isEmpty()) { activeQueues++; totalPending += q.size(); }
+            if (q.isProcessing()) processingQueues++;
         }
-
         return new BatchStats(
-                userQueues.size(),
-                activeQueues,
-                processingQueues,
-                totalPending,
-                totalProcessed.get(),
-                totalBatches.get());
+                wabaQueues.size(), activeQueues, processingQueues, totalPending,
+                totalRecipientsProcessed.get(), totalBatchesProcessed.get()
+        );
     }
 
-    // ==================== INNER CLASSES ====================
+    // ─── Inner Types ─────────────────────────────────────────────────────────
 
-    /**
-     * Per-user queue wrapper with processing state
-     */
-    private static class UserQueue {
-        private final String phoneNumberId;
-        private final ConcurrentLinkedQueue<BatchItem> queue;
-        private final AtomicBoolean processing;
-        private final AtomicLong lastActivity;
+    private static class WabaQueue {
+        private final String wabaKey;
+        private final ConcurrentLinkedQueue<QueuedBatch> queue = new ConcurrentLinkedQueue<>();
+        private final AtomicBoolean processing = new AtomicBoolean(false);
 
-        public UserQueue(String phoneNumberId) {
-            this.phoneNumberId = phoneNumberId;
-            this.queue = new ConcurrentLinkedQueue<>();
-            this.processing = new AtomicBoolean(false);
-            this.lastActivity = new AtomicLong(System.currentTimeMillis());
-        }
+        WabaQueue(String wabaKey) { this.wabaKey = wabaKey; }
 
-        public String getPhoneNumberId() {
-            return phoneNumberId;
-        }
-
-        public void addItem(BatchItem item) {
-            queue.offer(item);
-            lastActivity.set(System.currentTimeMillis());
-        }
-
-        public BatchItem poll() {
-            return queue.poll();
-        }
-
-        public boolean isEmpty() {
-            return queue.isEmpty();
-        }
-
-        public int size() {
-            return queue.size();
-        }
-
-        public boolean isProcessing() {
-            return processing.get();
-        }
-
-        /**
-         * Try to start processing. Returns true if we should start.
-         */
-        public boolean tryStartProcessing() {
-            return processing.compareAndSet(false, true);
-        }
-
-        /**
-         * Try to stop processing. Returns true if we stopped.
-         */
-        public boolean tryStopProcessing() {
-            return processing.compareAndSet(true, false);
-        }
-
-        /**
-         * Force stop processing (for error cases)
-         */
-        public void forceStopProcessing() {
-            processing.set(false);
-        }
-
-        public long getLastActivity() {
-            return lastActivity.get();
-        }
+        String getWabaKey() { return wabaKey; }
+        void enqueue(QueuedBatch b) { queue.offer(b); }
+        QueuedBatch poll() { return queue.poll(); }
+        boolean isEmpty() { return queue.isEmpty(); }
+        int size() { return queue.size(); }
+        boolean isProcessing() { return processing.get(); }
+        boolean tryStartProcessing() { return processing.compareAndSet(false, true); }
+        boolean tryStopProcessing() { return processing.compareAndSet(true, false); }
+        void forceStopProcessing() { processing.set(false); }
     }
 
-    public record BatchItem(
-            BroadcastReportEvent event,
-            Acknowledgment acknowledgment) {
-    }
+    private record QueuedBatch(BroadcastMessageEvent event, Acknowledgment acknowledgment) {}
 
-    private record WhatsAppResult(
-            Long broadcastId,
-            String recipient,
-            FacebookApiResponse<SendTemplateMessageResponse> response,
+    private record RecipientResult(
+            Long recipientId,
+            Long messageId,
+            Long contactId,
             boolean success,
+            String providerMessageId,
+            String errorCode,
             String errorMessage) {
-    }
 
-    public record DatabaseUpdate(
-            Long broadcastId,
-            String mobile,
-            String responseJson,
-            String status,
-            String messageStatus,
-            String whatsappMessageId,
-            String payload,
-            LocalDateTime timestamp) {
+        static RecipientResult success(Long recipientId, Long messageId, Long contactId, String providerMessageId) {
+            return new RecipientResult(recipientId, messageId, contactId, true, providerMessageId, null, null);
+        }
+
+        static RecipientResult failure(Long recipientId, Long messageId, Long contactId, String errorCode, String errorMessage) {
+            return new RecipientResult(recipientId, messageId, contactId, false, null, errorCode, errorMessage);
+        }
     }
 
     public record BatchStats(
-            int totalQueues,
-            int activeQueues,
-            int processingQueues,
-            int totalPending,
-            long totalProcessed,
-            long totalBatches) {
-    }
+            int totalQueues, int activeQueues, int processingQueues,
+            int totalPending, long totalRecipientsProcessed, long totalBatchesProcessed) {}
 }

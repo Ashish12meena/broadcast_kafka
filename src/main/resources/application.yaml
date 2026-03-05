@@ -1,3 +1,47 @@
 spring:
   application:
     name: broadcast
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: broadcast-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 100
+
+# ── Kafka Topics ─────────────────────────────────────────
+kafka:
+  topics:
+    outbound-messages: whatsapp.messages.outbound
+
+# ── Meta WhatsApp Cloud API ──────────────────────────────
+meta:
+  api:
+    base-url: https://graph.facebook.com/v23.0
+    connect-timeout: 5000
+    read-timeout: 30000
+
+# ── Messaging Service (callback target) ─────────────────
+messaging:
+  service:
+    base-url: ${MESSAGING_SERVICE_URL:http://localhost:8080}
+
+# ── WABA Credential Cache ────────────────────────────────
+waba:
+  credentials:
+    cache-ttl-ms: 3600000   # 1 hour
+
+# ── Campaign / Executor Config ───────────────────────────
+campaign:
+  max-concurrent-users: 100
+  semaphore-cleanup-enabled: true
+  executor:
+    core-pool-size: 500
+    max-pool-size: 2000
+    queue-capacity: 10000
+
+# ── Logging ──────────────────────────────────────────────
+logging:
+  level:
+    com.aigreentick.services.broadcast: INFO

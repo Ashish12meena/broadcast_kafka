@@ -1,5 +1,10 @@
 package com.aigreentick.services.broadcast.kafka.consumer;
 
+import com.aigreentick.services.broadcast.kafka.event.BroadcastMessageEvent;
+import com.aigreentick.services.broadcast.service.BatchCoordinatorService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import tools.jackson.databind.ObjectMapper;
 
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
@@ -8,21 +13,16 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
-import com.aigreentick.services.broadcast.service.BatchCoordinatorService;
-import com.aigreentick.services.messaging.broadcast.kafka.event.BroadcastReportEvent;
-import com.aigreentick.services.messaging.broadcast.service.impl.BatchCoordinator;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
 /**
- * Kafka consumer for broadcast messages.
- * 
- * 
- * - Consumer thread just adds event to batch and returns immediately
- * - BatchCoordinator handles all batching, WhatsApp calls, and DB updates
- * - Semaphores managed efficiently (held only during WhatsApp calls)
- * - Database updates done in single transaction per batch
+ * Kafka consumer for outbound broadcast messages.
+ *
+ * Topic:   whatsapp.messages.outbound
+ * Key:     waba_account_id
+ * Value:   JSON { campaign_id, waba_account_id, payloads: [...] }
+ *
+ * Each Kafka message contains a BATCH of recipients for one campaign + WABA account.
+ * The consumer deserializes and hands off to BatchCoordinatorService immediately.
+ * All heavy lifting (Meta API calls, callbacks) happens in the coordinator.
  */
 @Slf4j
 @Component
@@ -30,37 +30,40 @@ import lombok.extern.slf4j.Slf4j;
 public class BroadcastMessageConsumer {
 
     private final BatchCoordinatorService batchCoordinator;
+    private final ObjectMapper objectMapper;
 
     @KafkaListener(
-        topics = "${kafka.topics.campaign-messages.name}",
-        groupId = "${spring.kafka.consumer.group-id}",
-        containerFactory = "campaignKafkaListenerFactory"
+            topics = "${kafka.topics.outbound-messages:whatsapp.messages.outbound}",
+            groupId = "${spring.kafka.consumer.group-id:broadcast-service}",
+            containerFactory = "broadcastKafkaListenerFactory"
     )
-    public void consumeCampaignMessage(
-            @Payload BroadcastReportEvent event,
+    public void consume(
+            @Payload String rawMessage,
             @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset,
+            @Header(KafkaHeaders.RECEIVED_KEY) String wabaAccountId,
             Acknowledgment acknowledgment) {
 
-        log.info("Received message: broadcastId={} recipient={} partition={} offset={}",
-            event.getBroadcastId(), event.getRecipient(), partition, offset);
+        log.info("Received broadcast batch: wabaAccountId={} partition={} offset={}",
+                wabaAccountId, partition, offset);
 
         try {
-            // Simply add to batch - returns immediately
-            // BatchCoordinator handles:
-            // 1. Batching events (80 max)
-            // 2. Acquiring semaphores
-            // 3. Sending WhatsApp requests concurrently
-            // 4. Releasing semaphores
-            // 5. Batch updating database
-            // 6. Acknowledging messages
-            batchCoordinator.addEventToBatch(event, acknowledgment);
+            BroadcastMessageEvent event = objectMapper.readValue(rawMessage, BroadcastMessageEvent.class);
+
+            log.info("Parsed broadcast event: campaignId={} wabaAccountId={} recipients={}",
+                    event.getCampaignId(),
+                    event.getWabaAccountId(),
+                    event.getPayloads() != null ? event.getPayloads().size() : 0);
+
+            // Hand off to batch coordinator — returns immediately.
+            // Coordinator handles: Meta API calls, callbacks to messaging service, Kafka ack.
+            batchCoordinator.addBatch(event, acknowledgment);
 
         } catch (Exception e) {
-            log.error("Failed to add event to batch. broadcastId={} recipient={} partition={} offset={}",
-                event.getBroadcastId(), event.getRecipient(), partition, offset, e);
-            
-            // Acknowledge to prevent infinite retry
+            log.error("Failed to parse broadcast event: wabaAccountId={} partition={} offset={} error={}",
+                    wabaAccountId, partition, offset, e.getMessage(), e);
+
+            // Acknowledge to avoid infinite reprocessing of a malformed message
             acknowledgment.acknowledge();
         }
     }
