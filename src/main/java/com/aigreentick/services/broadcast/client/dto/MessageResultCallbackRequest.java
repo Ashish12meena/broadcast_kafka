@@ -41,8 +41,8 @@ public class MessageResultCallbackRequest {
         @JsonProperty("message_id")
         private Long messageId;
 
-        @JsonProperty("contact_id")
-        private Long contactId;
+        // @JsonProperty("contact_id")
+        // private Long contactId;
 
         /**
          * true = Meta accepted the message, false = Meta rejected it.

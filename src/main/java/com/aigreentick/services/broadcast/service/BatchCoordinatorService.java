@@ -290,7 +290,6 @@ public class BatchCoordinatorService {
                 return RecipientResult.success(
                         recipient.getRecipientId(),
                         recipient.getMessageId(),
-                        recipient.getContactId(),
                         response.getProviderMessageId());
             }
 
@@ -302,14 +301,14 @@ public class BatchCoordinatorService {
             }
             return RecipientResult.failure(
                     recipient.getRecipientId(), recipient.getMessageId(),
-                    recipient.getContactId(), errCode, errMsg);
+                 errCode, errMsg);
 
         } catch (Exception e) {
             log.error("Meta API call failed: campaignId={} recipientId={} phoneNumberId={} error={}",
                     campaignId, recipient.getRecipientId(), phoneNumberId, e.getMessage());
             return RecipientResult.failure(
                     recipient.getRecipientId(), recipient.getMessageId(),
-                    recipient.getContactId(), null, e.getMessage());
+                     null, e.getMessage());
         }
     }
 
@@ -329,7 +328,7 @@ public class BatchCoordinatorService {
                 .map(r -> MessageResultCallbackRequest.RecipientResult.builder()
                         .recipientId(r.recipientId())
                         .messageId(r.messageId())
-                        .contactId(r.contactId())
+                        // .contactId(r.contactId())
                         .success(r.success())
                         .providerMessageId(r.providerMessageId())
                         .errorCode(r.errorCode())
@@ -361,7 +360,7 @@ public class BatchCoordinatorService {
         return recipients.stream()
                 .map(r -> RecipientResult.failure(
                         r.getRecipientId(), r.getMessageId(),
-                        r.getContactId(), null, errorMessage))
+                        null, errorMessage))
                 .toList();
     }
 
@@ -486,19 +485,19 @@ public class BatchCoordinatorService {
     private record RecipientResult(
             Long recipientId,
             Long messageId,
-            Long contactId,
+            // Long contactId,
             boolean success,
             String providerMessageId,
             String errorCode,
             String errorMessage) {
 
-        static RecipientResult success(Long recipientId, Long messageId, Long contactId, String wamid) {
-            return new RecipientResult(recipientId, messageId, contactId, true, wamid, null, null);
+        static RecipientResult success(Long recipientId, Long messageId,  String wamid) {
+            return new RecipientResult(recipientId, messageId, true, wamid, null, null);
         }
 
-        static RecipientResult failure(Long recipientId, Long messageId, Long contactId,
+        static RecipientResult failure(Long recipientId, Long messageId,
                 String errorCode, String errorMessage) {
-            return new RecipientResult(recipientId, messageId, contactId, false, null, errorCode, errorMessage);
+            return new RecipientResult(recipientId, messageId, false, null, errorCode, errorMessage);
         }
     }
 

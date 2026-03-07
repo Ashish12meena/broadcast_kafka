@@ -55,8 +55,8 @@ public class BroadcastMessageEvent {
         @JsonProperty("message_id")
         private Long messageId;
 
-        @JsonProperty("contact_id")
-        private Long contactId;
+        // @JsonProperty("contact_id")
+        // private Long contactId;
 
         /**
          * Complete Meta API request body (JSON string, snake_case).
