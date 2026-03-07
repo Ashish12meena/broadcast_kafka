@@ -31,28 +31,21 @@ import java.util.concurrent.atomic.AtomicLong;
  * Processing model per Kafka message (up to 1000 recipients):
  * 1. addBatch() — enqueue, submit worker if none running. Returns immediately.
  * 2. drainQueue() — single worker per phone number drains batches sequentially.
- * 3. processBatch() — partition 1000 recipients into windows of WINDOW_SIZE
- * (80).
+ * 3. processBatch() — partition 1000 recipients into windows of WINDOW_SIZE (80).
  * 4. sendWindow() — send 80 to Meta concurrently, wait for all 80 responses.
- * 5. reportWindow() — immediately callback Messaging Service with those 80
- * results.
+ * 5. reportWindow() — immediately callback Messaging Service with those 80 results.
  * 6. repeat 4-5 — until all windows done, then acknowledge Kafka offset.
  */
 @Slf4j
 @Service
 public class BatchCoordinatorService {
 
-    /**
-     * Recipients sent concurrently per window.
-     * Equals Meta's per-phone-number concurrent request limit.
-     */
     private static final int WINDOW_SIZE = ConfigConstants.MAX_CONCURRENT_WHATSAPP_REQUESTS; // 80
 
     private final WhatsappClient whatsappClient;
     private final MessagingCallbackClient callbackClient;
     private final ExecutorService whatsappExecutor;
 
-    // One queue per phoneNumberId — one worker drains each queue sequentially
     private final ConcurrentHashMap<String, PhoneQueue> phoneQueues = new ConcurrentHashMap<>();
 
     private final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
@@ -74,11 +67,6 @@ public class BatchCoordinatorService {
 
     // ─── Entry Point ─────────────────────────────────────────────────────────
 
-    /**
-     * Called by Kafka consumer. Returns immediately — never blocks the consumer
-     * thread.
-     * Kafka offset is NOT acknowledged here — deferred until all windows complete.
-     */
     public void addBatch(BroadcastMessageEvent event, Acknowledgment acknowledgment) {
         if (shutdownRequested.get()) {
             log.warn("Shutdown in progress — acknowledging without processing: campaignId={}",
@@ -91,7 +79,6 @@ public class BatchCoordinatorService {
         PhoneQueue queue = phoneQueues.computeIfAbsent(phoneNumberId, PhoneQueue::new);
         queue.enqueue(new QueuedBatch(event, acknowledgment));
 
-        // Submit a worker only if none is running for this phone number
         if (queue.tryStartProcessing()) {
             whatsappExecutor.submit(() -> drainQueue(queue));
         }
@@ -99,11 +86,6 @@ public class BatchCoordinatorService {
 
     // ─── Queue Drain Loop ─────────────────────────────────────────────────────
 
-    /**
-     * Worker loop: processes all pending batches for one phone number sequentially.
-     * Exactly one worker runs per phone number at any time — enforced by
-     * PhoneQueue.processing.
-     */
     private void drainQueue(PhoneQueue queue) {
         String phoneNumberId = queue.getPhoneNumberId();
         log.debug("Worker started: phoneNumberId={}", phoneNumberId);
@@ -113,17 +95,15 @@ public class BatchCoordinatorService {
                 QueuedBatch batch = queue.poll();
 
                 if (batch == null) {
-                    // Try to exit — guard against race where new batch arrives just after poll()
                     if (queue.tryStopProcessing()) {
                         if (queue.isEmpty()) {
                             log.debug("Worker exiting: phoneNumberId={} queue empty", phoneNumberId);
                             return;
                         }
-                        // New batch arrived between poll() and tryStop() — re-acquire and continue
                         if (queue.tryStartProcessing()) {
                             continue;
                         }
-                        return; // Another worker took over
+                        return;
                     }
                     return;
                 }
@@ -139,17 +119,6 @@ public class BatchCoordinatorService {
 
     // ─── Batch Processing ─────────────────────────────────────────────────────
 
-    /**
-     * Processes one Kafka message (up to 1000 recipients) as sequential windows of
-     * WINDOW_SIZE.
-     *
-     * Flow:
-     * partition recipients into windows of 80
-     * for each window:
-     * → sendWindow() — 80 concurrent Meta API calls, wait for all
-     * → reportWindow() — callback Messaging Service with 80 results immediately
-     * → acknowledge Kafka offset once ALL windows done
-     */
     private void processBatch(String phoneNumberId, QueuedBatch queued) {
         BroadcastMessageEvent event = queued.event();
         long campaignId = event.getCampaignId();
@@ -178,10 +147,8 @@ public class BatchCoordinatorService {
                 log.debug("Window {}/{}: campaignId={} phoneNumberId={} size={}",
                         i + 1, totalWindows, campaignId, phoneNumberId, window.size());
 
-                // Send this window to Meta — blocks until all responses received
                 List<RecipientResult> windowResults = sendWindow(phoneNumberId, accessToken, window, campaignId);
 
-                // Immediately callback Messaging Service with this window's results
                 reportWindowResults(campaignId, phoneNumberId, windowResults);
 
                 long successCount = windowResults.stream().filter(RecipientResult::success).count();
@@ -194,9 +161,6 @@ public class BatchCoordinatorService {
                         windowResults.size() - successCount);
             }
 
-            // Acknowledge Kafka only after ALL windows complete
-            // At-least-once: crash before ack = Kafka redelivers whole batch
-            // Messaging Service deduplicates via wamid (provider_message_id)
             queued.acknowledgment().acknowledge();
             log.debug("Kafka acknowledged: campaignId={}", campaignId);
 
@@ -216,19 +180,6 @@ public class BatchCoordinatorService {
 
     // ─── Window Sending ───────────────────────────────────────────────────────
 
-    /**
-     * Sends one window (≤ WINDOW_SIZE recipients) to Meta fully concurrently.
-     *
-     * Semaphore:
-     * - Keyed by phoneNumberId — Meta's 80 concurrent request limit is per phone
-     * number
-     * - All permits acquired upfront (window.size() ≤ 80 = total permits)
-     * - Safe because exactly one worker runs per phone number — no semaphore
-     * contention
-     * - Released in finally — no semaphore leaks on timeout or exception
-     *
-     * @return results for all recipients in this window — never null, never partial
-     */
     private List<RecipientResult> sendWindow(
             String phoneNumberId,
             String accessToken,
@@ -274,6 +225,8 @@ public class BatchCoordinatorService {
     /**
      * One Meta API call for one recipient. Runs on whatsappExecutor.
      * Never throws — always returns success or failure RecipientResult.
+     *
+     * Now captures messageStatus from Meta response for accurate status tracking.
      */
     private RecipientResult callMeta(
             RecipientPayload recipient,
@@ -287,10 +240,18 @@ public class BatchCoordinatorService {
                     accessToken);
 
             if (response != null && response.isSuccess()) {
+                // Extract messageStatus from Meta response (e.g. "accepted", "sent")
+                String messageStatus = null;
+                if (response.getMessages() != null && !response.getMessages().isEmpty()) {
+                    messageStatus = response.getMessages().get(0).getMessageStatus();
+                }
+
                 return RecipientResult.success(
                         recipient.getRecipientId(),
                         recipient.getMessageId(),
-                        response.getProviderMessageId());
+                        recipient.getContactId(),
+                        response.getProviderMessageId(),
+                        messageStatus);                     // ← NEW: pass messageStatus
             }
 
             String errCode = null;
@@ -301,14 +262,14 @@ public class BatchCoordinatorService {
             }
             return RecipientResult.failure(
                     recipient.getRecipientId(), recipient.getMessageId(),
-                 errCode, errMsg);
+                    recipient.getContactId(), errCode, errMsg);
 
         } catch (Exception e) {
             log.error("Meta API call failed: campaignId={} recipientId={} phoneNumberId={} error={}",
                     campaignId, recipient.getRecipientId(), phoneNumberId, e.getMessage());
             return RecipientResult.failure(
                     recipient.getRecipientId(), recipient.getMessageId(),
-                     null, e.getMessage());
+                    recipient.getContactId(), null, e.getMessage());
         }
     }
 
@@ -317,7 +278,7 @@ public class BatchCoordinatorService {
     /**
      * Reports results for one window (≤ 80 recipients) to Messaging Service.
      * Fire-and-forget — never blocks the window loop.
-     * Called after every window for faster status visibility.
+     * Uses camelCase — inter-service convention.
      */
     private void reportWindowResults(
             long campaignId,
@@ -328,9 +289,10 @@ public class BatchCoordinatorService {
                 .map(r -> MessageResultCallbackRequest.RecipientResult.builder()
                         .recipientId(r.recipientId())
                         .messageId(r.messageId())
-                        // .contactId(r.contactId())
+                        .contactId(r.contactId())
                         .success(r.success())
                         .providerMessageId(r.providerMessageId())
+                        .messageStatus(r.messageStatus())           // ← NEW
                         .errorCode(r.errorCode())
                         .errorMessage(r.errorMessage())
                         .build())
@@ -360,7 +322,7 @@ public class BatchCoordinatorService {
         return recipients.stream()
                 .map(r -> RecipientResult.failure(
                         r.getRecipientId(), r.getMessageId(),
-                        null, errorMessage))
+                        r.getContactId(), null, errorMessage))
                 .toList();
     }
 
@@ -374,7 +336,7 @@ public class BatchCoordinatorService {
 
     // ─── Cleanup ──────────────────────────────────────────────────────────────
 
-    @Scheduled(fixedRate = 300_000) // Every 5 minutes
+    @Scheduled(fixedRate = 300_000)
     public void cleanupEmptyQueues() {
         int removed = 0;
         for (var entry : phoneQueues.entrySet()) {
@@ -482,22 +444,29 @@ public class BatchCoordinatorService {
     private record QueuedBatch(BroadcastMessageEvent event, Acknowledgment acknowledgment) {
     }
 
+    /**
+     * Updated: added messageStatus field to carry Meta's status string.
+     */
     private record RecipientResult(
             Long recipientId,
             Long messageId,
-            // Long contactId,
+            Long contactId,
             boolean success,
             String providerMessageId,
+            String messageStatus,           // ← NEW
             String errorCode,
             String errorMessage) {
 
-        static RecipientResult success(Long recipientId, Long messageId,  String wamid) {
-            return new RecipientResult(recipientId, messageId, true, wamid, null, null);
+        static RecipientResult success(Long recipientId, Long messageId, Long contactId,
+                                        String wamid, String messageStatus) {
+            return new RecipientResult(recipientId, messageId, contactId, true,
+                    wamid, messageStatus, null, null);
         }
 
-        static RecipientResult failure(Long recipientId, Long messageId,
+        static RecipientResult failure(Long recipientId, Long messageId, Long contactId,
                 String errorCode, String errorMessage) {
-            return new RecipientResult(recipientId, messageId, false, null, errorCode, errorMessage);
+            return new RecipientResult(recipientId, messageId, contactId, false,
+                    null, null, errorCode, errorMessage);
         }
     }
 

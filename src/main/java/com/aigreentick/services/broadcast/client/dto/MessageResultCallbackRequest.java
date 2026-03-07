@@ -1,6 +1,5 @@
 package com.aigreentick.services.broadcast.client.dto;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Data;
 
@@ -12,6 +11,7 @@ import java.util.List;
  *
  * POST /internal/broadcast/callbacks/message-results
  *
+ * Uses camelCase — inter-service convention.
  * Called once per window (every 80 recipients), not once per full Kafka batch.
  * Messaging Service performs a single bulk UPDATE for all results in one call.
  */
@@ -19,14 +19,12 @@ import java.util.List;
 @Builder
 public class MessageResultCallbackRequest {
 
-    @JsonProperty("campaign_id")
     private Long campaignId;
 
     /**
      * The phone number that sent these messages.
      * Identifies which phone number's window these results belong to.
      */
-    @JsonProperty("phone_number_id")
     private String phoneNumberId;
 
     private List<RecipientResult> results;
@@ -35,14 +33,11 @@ public class MessageResultCallbackRequest {
     @Builder
     public static class RecipientResult {
 
-        @JsonProperty("recipient_id")
         private Long recipientId;
 
-        @JsonProperty("message_id")
         private Long messageId;
 
-        // @JsonProperty("contact_id")
-        // private Long contactId;
+        private Long contactId;
 
         /**
          * true = Meta accepted the message, false = Meta rejected it.
@@ -50,19 +45,34 @@ public class MessageResultCallbackRequest {
         private boolean success;
 
         /**
-         * Populated when success=true. wamid from Meta response.
+         * wamid from Meta response. Populated when success=true.
          * Used by Messaging Service for deduplication on Kafka re-delivery.
          */
-        @JsonProperty("provider_message_id")
         private String providerMessageId;
+
+        /**
+         * Meta's message_status string: "accepted", "sent", etc.
+         * Populated when success=true.
+         */
+        private String messageStatus;
+
+        /**
+         * JSON string of the payload sent to Meta.
+         * Kept for future auditing — currently not persisted by messaging service.
+         */
+        private String payload;
+
+        /**
+         * JSON string of Meta's raw response.
+         * Kept for future auditing — currently not persisted by messaging service.
+         */
+        private String response;
 
         /**
          * Populated when success=false.
          */
-        @JsonProperty("error_code")
         private String errorCode;
 
-        @JsonProperty("error_message")
         private String errorMessage;
     }
 }

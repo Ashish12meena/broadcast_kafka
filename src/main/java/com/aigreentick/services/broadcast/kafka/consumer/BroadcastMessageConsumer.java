@@ -18,9 +18,8 @@ import org.springframework.stereotype.Component;
  * Kafka consumer for outbound broadcast messages.
  *
  * Topic:   whatsapp.messages.outbound
- * Key:     phone_number_id  (partition affinity — all batches for same phone number
- *                            land on same partition, isolating rate limits per phone)
- * Value:   JSON { campaign_id, phone_number_id, access_token, payloads: [...] }
+ * Key:     wabaAccountId (String) — from messaging service, used as phoneNumberId here
+ * Value:   JSON { campaignId, wabaAccountId, accessToken, payloads: [...] }
  *
  * Each Kafka message contains a batch of up to 1000 recipients for one campaign
  * and one phone number. The consumer deserializes and hands off to
@@ -44,11 +43,11 @@ public class BroadcastMessageConsumer {
             @Payload String rawMessage,
             @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset,
-            @Header(KafkaHeaders.RECEIVED_KEY) String phoneNumberId,
+            @Header(KafkaHeaders.RECEIVED_KEY) String kafkaKey,
             Acknowledgment acknowledgment) {
 
-        log.info("Received broadcast batch: phoneNumberId={} partition={} offset={}",
-                phoneNumberId, partition, offset);
+        log.info("Received broadcast batch: kafkaKey={} partition={} offset={}",
+                kafkaKey, partition, offset);
 
         try {
             BroadcastMessageEvent event = objectMapper.readValue(rawMessage, BroadcastMessageEvent.class);
@@ -61,8 +60,8 @@ public class BroadcastMessageConsumer {
             batchCoordinator.addBatch(event, acknowledgment);
 
         } catch (Exception e) {
-            log.error("Failed to parse broadcast event: phoneNumberId={} partition={} offset={} error={}",
-                    phoneNumberId, partition, offset, e.getMessage(), e);
+            log.error("Failed to parse broadcast event: kafkaKey={} partition={} offset={} error={}",
+                    kafkaKey, partition, offset, e.getMessage(), e);
 
             // Acknowledge to avoid infinite reprocessing of a malformed message
             acknowledgment.acknowledge();

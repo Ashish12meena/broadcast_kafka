@@ -9,12 +9,16 @@ import java.util.List;
 /**
  * Kafka event received from messaging service on topic: whatsapp.messages.outbound
  *
- * Key:   phone_number_id (partition affinity — all batches for same phone number
- *        go to same partition, preserving order and isolating rate limits)
+ * Messaging service publishes camelCase JSON:
+ *   { "campaignId": 42, "wabaAccountId": 123, "accessToken": "...", "payloads": [...] }
  *
- * phone_number_id drives everything in the broadcast service:
+ * wabaAccountId from messaging service = phoneNumberId in broadcast service context.
+ * This is the same identifier — messaging service calls it wabaAccountId internally,
+ * but it's used as phoneNumberId for Meta API calls.
+ *
+ * phoneNumberId drives everything in the broadcast service:
  *   - Kafka partition key
- *   - Per-phone WabaQueue key
+ *   - Per-phone PhoneQueue key
  *   - Semaphore key (Meta enforces 80 concurrent requests per phone number)
  *   - Meta API path param: POST /{phoneNumberId}/messages
  */
@@ -22,21 +26,21 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class BroadcastMessageEvent {
 
-    @JsonProperty("campaign_id")
+    /** Campaign ID from messaging service */
     private Long campaignId;
 
     /**
      * The sending phone number ID registered with Meta.
+     * Messaging service sends this as "wabaAccountId" — mapped here via @JsonProperty.
      * Single identifier used for queuing, rate limiting, and API calls.
      */
-    @JsonProperty("phone_number_id")
+    @JsonProperty("wabaAccountId")
     private String phoneNumberId;
 
     /**
      * Bearer token for Meta API authentication.
      * Embedded by Messaging Service at dispatch time — no credential lookup needed here.
      */
-    @JsonProperty("access_token")
     private String accessToken;
 
     /**
@@ -49,21 +53,17 @@ public class BroadcastMessageEvent {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class RecipientPayload {
 
-        @JsonProperty("recipient_id")
         private Long recipientId;
 
-        @JsonProperty("message_id")
         private Long messageId;
 
-        // @JsonProperty("contact_id")
-        // private Long contactId;
+        private Long contactId;
 
         /**
          * Complete Meta API request body (JSON string, snake_case).
          * Pre-built by Messaging Service during campaign preparation.
          * Ready to POST to /{phoneNumberId}/messages as-is.
          */
-        @JsonProperty("request_payload")
         private String requestPayload;
     }
 }
