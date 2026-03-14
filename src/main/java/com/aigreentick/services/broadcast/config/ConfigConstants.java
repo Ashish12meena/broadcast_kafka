@@ -11,5 +11,5 @@ public final class ConfigConstants {
      * Max concurrent WhatsApp API requests per WABA account.
      * Meta allows up to 80 concurrent requests per WABA account.
      */
-    public static final int MAX_CONCURRENT_WHATSAPP_REQUESTS = 80;
+    public static final int MAX_CONCURRENT_WHATSAPP_REQUESTS = 50;
 }
