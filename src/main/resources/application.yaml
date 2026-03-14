@@ -29,7 +29,11 @@ meta:
 messaging:
   service:
     base-url: ${MESSAGING_SERVICE_URL:http://localhost:8080}
-
+    connect-timeout: 5000
+    read-timeout: 30000
+    paths:
+      message-results-callback: /internal/broadcast/callbacks/message-results
+      
 # ── WABA Credential Cache ────────────────────────────────
 waba:
   credentials:

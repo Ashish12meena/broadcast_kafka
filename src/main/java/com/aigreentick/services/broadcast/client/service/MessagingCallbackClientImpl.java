@@ -11,8 +11,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 public class MessagingCallbackClientImpl implements MessagingCallbackClient {
 
     private final WebClient webClient;
+    private final MessagingClientProperties props;
 
     public MessagingCallbackClientImpl(WebClient.Builder builder, MessagingClientProperties props) {
+        this.props = props;
         this.webClient = builder
                 .baseUrl(props.getBaseUrl())
                 .defaultHeader("Content-Type", "application/json")
@@ -25,16 +27,15 @@ public class MessagingCallbackClientImpl implements MessagingCallbackClient {
                 request.getCampaignId(),
                 request.getResults() != null ? request.getResults().size() : 0);
 
-        // Fire-and-forget: subscribe() without blocking
         webClient.post()
-                .uri("/internal/broadcast/callbacks/message-results")
+                .uri(props.getPaths().getMessageResultsCallback())
                 .bodyValue(request)
                 .retrieve()
                 .toBodilessEntity()
                 .subscribe(
-                        response -> log.debug("Callback accepted by messaging service: campaignId={} status={}",
+                        response -> log.debug("Callback accepted: campaignId={} status={}",
                                 request.getCampaignId(), response.getStatusCode()),
-                        error -> log.error("Callback to messaging service failed: campaignId={} error={}",
+                        error -> log.error("Callback failed: campaignId={} error={}",
                                 request.getCampaignId(), error.getMessage())
                 );
     }
