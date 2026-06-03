@@ -2,9 +2,10 @@ package com.aigreentick.services.broadcast.kafka.consumer;
 
 import com.aigreentick.services.broadcast.kafka.event.BroadcastMessageEvent;
 import com.aigreentick.services.broadcast.service.BatchCoordinatorService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import tools.jackson.databind.ObjectMapper;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.kafka.annotation.KafkaListener;

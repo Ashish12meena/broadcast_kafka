@@ -1,7 +1,6 @@
 package com.aigreentick.services.broadcast.kafka.event;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 import java.util.List;
@@ -29,14 +28,10 @@ public class BroadcastMessageEvent {
     /** Campaign ID from messaging service */
     private Long campaignId;
 
-    /**
-     * The sending phone number ID registered with Meta.
-     * Messaging service sends this as "wabaAccountId" — mapped here via @JsonProperty.
-     * Single identifier used for queuing, rate limiting, and API calls.
-     */
-    @JsonProperty("wabaAccountId")
-    private String phoneNumberId;
+ 
+   private Long wabaAccountId;    
 
+    private String phoneNumberId; 
     /**
      * Bearer token for Meta API authentication.
      * Embedded by Messaging Service at dispatch time — no credential lookup needed here.

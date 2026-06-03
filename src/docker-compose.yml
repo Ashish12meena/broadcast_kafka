@@ -1,0 +1,22 @@
+services:
+
+  broadcast-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: broadcast-service
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: 8090
+      KAFKA_BOOTSTRAP_SERVERS: 146.88.24.113:9092
+      MESSAGING_SERVICE_URL: http://messaging-service:8050
+      EUREKA_SERVER_URL: http://eureka-server:8761/eureka
+    networks:
+      - apargo-network
+
+networks:
+  apargo-network:
+    external: true

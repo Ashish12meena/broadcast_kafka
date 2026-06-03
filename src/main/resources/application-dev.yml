@@ -1,22 +1,19 @@
 spring:
   application:
     name: broadcast
-  profiles:
-    active: dev
+    
     include:
       - kafka      # always include kafka
       - mock       # kafka not active by default
 
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
     consumer:
       group-id: broadcast-service
       auto-offset-reset: earliest
       enable-auto-commit: false
       max-poll-records: 100
 
-server:
-  port: ${SERVER_PORT:8090}
 
 eureka:
   client:
@@ -28,15 +25,6 @@ eureka:
     prefer-ip-address: true
     instance-id: ${spring.application.name}:${server.port:8090}
 
-kafka:
-  topics:
-    outbound-messages: whatsapp.messages.outbound
-
-meta:
-  api:
-    base-url: https://graph.facebook.com/v23.0
-    connect-timeout: 5000
-    read-timeout: 30000
 
 messaging:
   service:
@@ -45,19 +33,3 @@ messaging:
     read-timeout: 30000
     paths:
       message-results-callback: /internal/broadcast/callbacks/message-results
-
-waba:
-  credentials:
-    cache-ttl-ms: 3600000
-
-campaign:
-  max-concurrent-users: 100
-  semaphore-cleanup-enabled: true
-  executor:
-    core-pool-size: 500
-    max-pool-size: 2000
-    queue-capacity: 10000
-
-logging:
-  level:
-    com.aigreentick.services.broadcast: INFO
