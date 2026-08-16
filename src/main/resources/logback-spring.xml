@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Plain text locally, JSON everywhere else.
+
+  Structured output matters here because the useful queries are all of the form "everything for this
+  campaign" or "every rate limit on this phone number in the last hour", and those are impractical
+  against free text. The MDC fields the send path sets - campaignId, phoneNumberId, recipientId -
+  become first-class fields under the json profile.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProfile name="dev,test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} %-5level [%X{phoneNumberId:-}/%X{campaignId:-}] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!dev &amp; !test">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <timestamp/>
+                    <logLevel/>
+                    <loggerName/>
+                    <threadName/>
+                    <message/>
+                    <!-- campaignId, phoneNumberId, recipientId, and the Kafka coordinates -->
+                    <mdc/>
+                    <stackTrace/>
+                    <pattern>
+                        <pattern>{"service":"broadcast-service"}</pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+</configuration>

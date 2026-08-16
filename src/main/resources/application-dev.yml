@@ -1,35 +1,26 @@
+# Local development: everything on localhost, topics created automatically, verbose logging.
 spring:
-  application:
-    name: broadcast
-    
-    include:
-      - kafka      # always include kafka
-      - mock       # kafka not active by default
-
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
-    consumer:
-      group-id: broadcast-service
-      auto-offset-reset: earliest
-      enable-auto-commit: false
-      max-poll-records: 100
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
 
+broadcast:
+  kafka:
+    auto-create-topics: true
+    dispatch-concurrency: 2
+  dispatch:
+    max-concurrent-sends: 16
+  meta:
+    max-connections: 16
+  rate-limit:
+    assumed-instances: 1
 
 eureka:
   client:
-    service-url:
-      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka}
-    register-with-eureka: true
-    fetch-registry: true
-  instance:
-    prefer-ip-address: true
-    instance-id: ${spring.application.name}:${server.port:8090}
+    enabled: false
 
-
-messaging:
-  service:
-    base-url: ${MESSAGING_SERVICE_URL:http://localhost:8050}
-    connect-timeout: 5000
-    read-timeout: 30000
-    paths:
-      message-results-callback: /internal/broadcast/callbacks/message-results
+logging:
+  level:
+    com.aigreentick.services.broadcast: DEBUG

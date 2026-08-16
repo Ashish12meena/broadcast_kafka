@@ -1,0 +1,25 @@
+# Production. Every connection detail comes from the environment; nothing sensitive is in the image.
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+
+broadcast:
+  kafka:
+    auto-create-topics: false
+    dispatch-concurrency: ${KAFKA_DISPATCH_CONCURRENCY:6}
+  dispatch:
+    # Sized from mps x p99 latency for one instance's share. Measure before changing.
+    max-concurrent-sends: ${MAX_CONCURRENT_SENDS:64}
+  meta:
+    max-connections: ${META_MAX_CONNECTIONS:64}
+  rate-limit:
+    assumed-instances: ${ASSUMED_INSTANCES:3}
+
+logging:
+  level:
+    com.aigreentick.services.broadcast: INFO

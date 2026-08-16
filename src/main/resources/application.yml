@@ -1,0 +1,143 @@
+spring:
+  application:
+    name: broadcast-service
+
+  # Virtual threads. A send is almost entirely waiting on Meta, and one platform thread per waiting
+  # request is what makes high throughput expensive in memory and scheduler time.
+  threads:
+    virtual:
+      enabled: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
+    consumer:
+      group-id: ${KAFKA_GROUP_ID:broadcast-service}
+      max-poll-records: 100
+
+  data:
+    redis:
+      host: ${REDIS_HOST:146.88.24.113}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      lettuce:
+        pool:
+          # Sized above max-concurrent-sends: the idempotency guard and the token bucket are both
+          # called from send threads, so pool exhaustion here would throttle sending invisibly.
+          max-active: 64
+          max-idle: 16
+          min-idle: 4
+          max-wait: 2s
+
+  lifecycle:
+    # Must exceed broadcast.dispatch.shutdown-grace, or the platform kills the pod while it is still
+    # draining and the in-flight sends are lost with no outcome recorded.
+    timeout-per-shutdown-phase: 45s
+
+server:
+  port: ${SERVER_PORT:8060}
+  shutdown: graceful
+
+broadcast:
+  topics:
+    outbound-messages: ${TOPIC_OUTBOUND:whatsapp.messages.outbound}
+    capacity-updates: ${TOPIC_CAPACITY:whatsapp.capacity.updates}
+    message-results: ${TOPIC_RESULTS:whatsapp.messages.results}
+    dead-letter: ${TOPIC_DLQ:whatsapp.messages.outbound.dlq}
+
+  kafka:
+    # Should equal the partition count of the outbound topic.
+    dispatch-concurrency: ${KAFKA_DISPATCH_CONCURRENCY:6}
+    auto-create-topics: false
+
+  dispatch:
+    # Tokens requested per acquisition. Larger means fewer Redis round trips and coarser pacing.
+    chunk-size: 50
+    # Local in-flight ceiling for this instance. Keep at or below meta.max-connections, or the excess
+    # simply queues inside the connection pool and shows up as latency instead of as backpressure.
+    max-concurrent-sends: 64
+    max-queued-batches-per-number: 20
+    # Far below the pause threshold on purpose, so the consumer does not oscillate.
+    queue-resume-threshold: 5
+    max-sleep: 200ms
+    shutdown-grace: 30s
+    housekeeping-interval: PT60S
+
+  rate-limit:
+    # How much unused capacity a number may bank. Small: an idle number with a large burst spends it
+    # all the instant a campaign starts, which is precisely what earns a 429.
+    burst-seconds: 1.5
+    # Assumed rate for a number nothing is known about. Never set this to the high tier — guessing
+    # low delays a campaign, guessing high costs quality rating, which lowers the real ceiling.
+    default-mps: 80
+    fallback-fraction: 0.5
+    # Over-estimating is the safe direction: it makes the fallback more conservative, not less.
+    assumed-instances: ${ASSUMED_INSTANCES:3}
+    capacity-cache-ttl: 1s
+    degrade-lock-ttl: 5s
+    # Meta documents a throughput upgrade as taking up to about a minute.
+    upgrade-backoff: 90s
+
+  meta:
+    base-url: ${META_BASE_URL:https://graph.facebook.com/v23.0}
+    connect-timeout: 3s
+    read-timeout: 15s
+    # Explicit on purpose. Reactor Netty defaults to max(cores, 8) x 2 — sixteen on a four-core pod —
+    # which silently caps throughput below every other limit in the system.
+    max-connections: 64
+    pending-acquire-timeout: 5s
+    idle-timeout: 30s
+
+  retry:
+    max-attempts: 3
+    base-backoff: 500ms
+    max-backoff: 30s
+
+  circuit-breaker:
+    failure-rate-threshold: 50
+    sliding-window-size: 20
+    minimum-number-of-calls: 10
+    wait-duration-in-open-state: 30s
+
+  idempotency:
+    enabled: true
+    # Must comfortably exceed the Messaging Service's processing timeout, or a claim expires before
+    # the redelivery it exists to guard against.
+    claim-ttl: 10m
+
+  results:
+    flush-size: 200
+    flush-interval: 2s
+
+eureka:
+  client:
+    enabled: ${EUREKA_ENABLED:true}
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://146.88.24.113:8761/eureka}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${server.port}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  health:
+    # Readiness only. A Redis outage puts the service on conservative local rates, which is degraded
+    # but working — restarting pods over it would turn a cache problem into an outage.
+    redis:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.aigreentick.services.broadcast: INFO
+    org.apache.kafka: WARN
