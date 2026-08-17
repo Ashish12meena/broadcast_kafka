@@ -11,7 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  *
  * <p>Consumes pre-rendered dispatch batches from the Messaging Service, paces them against Meta's
  * per-phone-number rate limit using a Redis token bucket shared by every instance, and publishes
- * per-recipient outcomes back to Kafka .
+ * per-recipient outcomes back to Kafka.
  *
  * <p>The service owns no campaign state. All shared state lives in Redis or Kafka, so instances are
  * interchangeable and scaling is a replica-count change.
