@@ -2,8 +2,8 @@ spring:
   application:
     name: broadcast-service
 
-  # profiles:
-  #   active: test
+  profiles:
+    active: test
 
   # Virtual threads. A send is almost entirely waiting on Meta, and one platform thread per waiting
   # request is what makes high throughput expensive in memory and scheduler time.
