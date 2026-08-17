@@ -13,7 +13,7 @@
 
     <groupId>com.aigreentick.services</groupId>
     <artifactId>broadcast-service</artifactId>
-    <version>1.0.0</version>
+    <version>0.0.1</version>
     <name>broadcast-service</name>
     <description>Centralised WhatsApp send executor with per-phone-number rate control</description>
 
