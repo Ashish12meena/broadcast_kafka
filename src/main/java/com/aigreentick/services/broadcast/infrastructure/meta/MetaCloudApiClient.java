@@ -5,6 +5,7 @@ import com.aigreentick.services.broadcast.domain.model.SendResponse;
 import com.aigreentick.services.broadcast.infrastructure.meta.dto.MetaSendResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -28,15 +29,18 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * {@code block()} here runs on a virtual thread, where parking is cheap. The alternative — threading
  * reactive types through the dispatch loop — would make the pacing logic considerably harder to read
  * for no gain, since the loop's shape is inherently sequential per phone number.
+ *
+ * <h2>Not registered under the test profile</h2>
+ * {@code @Profile("!test")} is what guarantees that a test-profile deployment cannot reach Meta:
+ * under that profile this bean does not exist, so there is no path from the dispatch loop to the
+ * network. That is a stronger guarantee than an {@code if} inside the send method, which would leave
+ * a live client wired up and one mistaken flag away from sending real messages.
  */
 @Component
+@Profile("!test")
 public class MetaCloudApiClient implements MetaSendPort {
 
     private static final Logger log = LoggerFactory.getLogger(MetaCloudApiClient.class);
-
-    /** Stands in for a response with no body, so the caller sees a value rather than a null. */
-    private static final MetaSendResponse EMPTY_RESPONSE =
-            new MetaSendResponse(null, null, null);
 
     private final WebClient metaWebClient;
 
@@ -45,7 +49,9 @@ public class MetaCloudApiClient implements MetaSendPort {
     }
 
     @Override
-    public SendResponse send(String phoneNumberId, String accessToken, String requestPayload) {
+    public SendResponse send(
+            String phoneNumberId, Long wabaAccountId, String accessToken, String requestPayload) {
+        // wabaAccountId is deliberately unused: Meta addresses the send by phone number id.
         try {
             MetaSendResponse response = metaWebClient.post()
                     .uri("/{phoneNumberId}/messages", phoneNumberId)
@@ -56,21 +62,10 @@ public class MetaCloudApiClient implements MetaSendPort {
                     // inside that body, so it has to be deserialized rather than thrown away.
                     .exchangeToMono(clientResponse ->
                             clientResponse.bodyToMono(MetaSendResponse.class)
-                                    .defaultIfEmpty(EMPTY_RESPONSE))
+                                    .defaultIfEmpty(MetaResponseMapper.EMPTY_RESPONSE))
                     .block();
 
-            if (response == null) {
-                return SendResponse.rejected(null, "Empty response from Meta");
-            }
-            if (response.accepted()) {
-                return SendResponse.accepted(response.providerMessageId(), response.messageStatus());
-            }
-
-            MetaSendResponse.MetaError error = response.error();
-            if (error == null) {
-                return SendResponse.rejected(null, "Meta returned neither a message nor an error");
-            }
-            return SendResponse.rejected(error.code(), error.message());
+            return MetaResponseMapper.toSendResponse(response);
 
         } catch (WebClientResponseException e) {
             // Meta answered but the body could not be read as the expected shape.

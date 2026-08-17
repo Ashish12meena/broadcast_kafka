@@ -1,0 +1,49 @@
+# Simulate Meta response and callback by this profile
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
+  data:
+    redis:
+      host: ${REDIS_HOST:146.88.24.113:6379}
+
+broadcast:
+  kafka:
+    auto-create-topics: true
+    dispatch-concurrency: 2
+
+  dispatch:
+    max-concurrent-sends: 16
+
+  rate-limit:
+    assumed-instances: 1
+
+  simulator:
+    # >>> SUPPLY THIS <<<
+    # Absolute URL that receives the simulated status callbacks — normally the same webhook endpoint
+    # Meta posts to in production. Left blank, sends are still simulated, one warning is logged, and
+    # no statuses are posted.
+    callback-url: ${SIM_CALLBACK_URL:http://146.88.24.113:8090}
+
+    # Optional, for a receiver behind a verification token or an internal API key.
+    # headers:
+    #   X-Internal-Api-Key: ${INTERNAL_API_KEY:}
+    #   X-Internal-Caller: broadcast-service
+
+    # Random gap before each status, drawn independently and applied cumulatively: `delivered` lands
+    # after two draws and `read` after three. Randomising is the point — statuses arriving in send
+    # order never exercise the receiver's out-of-order handling.
+    min-delay: ${SIM_CALLBACK_MIN_DELAY:1s}
+    max-delay: ${SIM_CALLBACK_MAX_DELAY:8s}
+
+    # Nothing about the sending account is configured here. phoneNumberId and wabaAccountId both come
+    # from the DispatchEvent that produced the send.
+
+eureka:
+  client:
+    enabled: false
+
+logging:
+  level:
+    com.aigreentick.services.broadcast: DEBUG
+    com.aigreentick.services.broadcast.infrastructure.meta.simulator: DEBUG
