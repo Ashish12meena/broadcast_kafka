@@ -1,25 +1,39 @@
-# Local development: everything on localhost, topics created automatically, verbose logging.
 spring:
+  config:
+    import: optional:file:.env[.properties]
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
   data:
     redis:
       host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+server:
+  port: ${SERVER_PORT:8060}
 
 broadcast:
   kafka:
     auto-create-topics: true
     dispatch-concurrency: 2
+
   dispatch:
     max-concurrent-sends: 16
+
   meta:
+    base-url: ${META_BASE_URL:https://graph.facebook.com/v23.0}
     max-connections: 16
+
   rate-limit:
     assumed-instances: 1
 
 eureka:
   client:
-    enabled: false
+    enabled: ${EUREKA_ENABLED:false}
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka}
 
 logging:
   level:

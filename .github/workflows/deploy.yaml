@@ -1,0 +1,41 @@
+name: Broadcast Kafka Service CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.PORT }}
+
+          script: |
+            set -e
+
+            cd /var/aigreentick-new-structure-node-spring/spring-boot/broadcast_kafka/
+
+            echo "Pulling latest code..."
+            git pull origin main
+
+            echo "Building project..."
+            mvn clean install -DskipTests
+
+            echo "Restarting Broadcast Kafka service..."
+            systemctl restart java-apargo-broadcast-kafka.service
+
+            echo "Checking service status..."
+            sleep 20
+            systemctl is-active java-apargo-broadcast-kafka.service
+
+            echo "Deployment Successful!"
