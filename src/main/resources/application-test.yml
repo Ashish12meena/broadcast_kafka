@@ -5,7 +5,7 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
   data:
     redis:
-      host: ${REDIS_HOST:146.88.24.113:6379}
+      host: ${REDIS_HOST:146.88.24.113}
 
 broadcast:
   kafka:

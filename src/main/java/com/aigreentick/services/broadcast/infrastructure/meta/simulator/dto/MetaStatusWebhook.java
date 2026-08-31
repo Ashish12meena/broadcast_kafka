@@ -48,13 +48,19 @@ public record MetaStatusWebhook(
      *                    handed out
      * @param timestamp   seconds since epoch as a string, as Meta sends it: not milliseconds, and
      *                    not a number
-     * @param recipientId the recipient's number in international format without a plus
+     * @param recipientId  the recipient's number in international format without a plus
+     * @param callbackData {@code biz_opaque_callback_data} exactly as it appeared on the send
+     *                     request. Meta echoes this on every status, and the Messaging Service
+     *                     matches on it before it matches on the wamid — so a simulator that
+     *                     dropped it would keep passing while hiding the one race the field
+     *                     exists to close
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Status(
             String id,
             String status,
             String timestamp,
-            @JsonProperty("recipient_id") String recipientId) {
+            @JsonProperty("recipient_id") String recipientId,
+            @JsonProperty("biz_opaque_callback_data") String callbackData) {
     }
 }

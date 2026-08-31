@@ -57,7 +57,8 @@ public class MetaStatusCallbackSimulator {
      * would fail a send the simulator has already reported as accepted.
      */
     public void scheduleFor(
-            String phoneNumberId, Long wabaAccountId, String wamid, String recipientPhone) {
+            String phoneNumberId, Long wabaAccountId, String wamid, String recipientPhone,
+            String callbackData) {
 
         if (!properties.callbacksEnabled()) {
             if (warnedNoUrl.compareAndSet(false, true)) {
@@ -74,7 +75,8 @@ public class MetaStatusCallbackSimulator {
             for (String status : PROGRESSION) {
                 cumulative = cumulative.plus(
                         randomDelay(properties.minDelay(), properties.maxDelay()));
-                post(buildPayload(phoneNumberId, wabaAccountId, wamid, recipient, status),
+                post(buildPayload(phoneNumberId, wabaAccountId, wamid, recipient, status,
+                                callbackData),
                         status, wamid, cumulative);
             }
         } catch (RuntimeException e) {
@@ -103,12 +105,13 @@ public class MetaStatusCallbackSimulator {
     }
 
     MetaStatusWebhook buildPayload(
-            String phoneNumberId, Long wabaAccountId, String wamid, String recipient, String status) {
+            String phoneNumberId, Long wabaAccountId, String wamid, String recipient, String status,
+            String callbackData) {
 
         String timestamp = String.valueOf(Instant.now().getEpochSecond());
 
         MetaStatusWebhook.Status statusBlock =
-                new MetaStatusWebhook.Status(wamid, status, timestamp, recipient);
+                new MetaStatusWebhook.Status(wamid, status, timestamp, recipient, callbackData);
 
         MetaStatusWebhook.Value value = new MetaStatusWebhook.Value(
                 "whatsapp",

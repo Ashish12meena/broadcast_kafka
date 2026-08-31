@@ -71,6 +71,23 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
     }
 
     @Override
+    public String claimedMessageId(Long recipientId) {
+        if (!properties.idempotency().enabled() || recipientId == null) {
+            return null;
+        }
+        try {
+            String value = redis.opsForValue().get(RedisKeys.sentClaim(recipientId));
+            // CLAIMED means the claim was taken but confirm() never ran — an in-flight send, or one
+            // that failed before it got a wamid. Either way there is no message id to report.
+            return CLAIMED.equals(value) ? null : value;
+
+        } catch (DataAccessException e) {
+            log.debug("Could not read claim recipientId={} reason={}", recipientId, e.toString());
+            return null;
+        }
+    }
+
+    @Override
     public void confirm(Long recipientId, String providerMessageId) {
         if (!properties.idempotency().enabled() || recipientId == null || providerMessageId == null) {
             return;

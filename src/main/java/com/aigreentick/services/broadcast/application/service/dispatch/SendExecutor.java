@@ -109,11 +109,22 @@ public class SendExecutor {
             permitHeld = true;
 
             if (send.attempts() == 0 && !idempotency.claim(recipient.recipientId())) {
-                // Already sent by an earlier delivery of this batch. Reporting it again would be
-                // recorded a second time; the original send's outcome already moved the row.
+                // Already sent by an earlier delivery of this batch, so Meta must not be called
+                // again. The outcome is still reported, and that is the correction: reporting
+                // nothing left the Messaging Service holding a row in PROCESSING with no result
+                // ever arriving, which ProcessingStuckCleanupJob eventually released and re-sent —
+                // producing the exact duplicate this guard exists to prevent, by way of the guard.
+                //
+                // The wamid comes from the claim itself: confirm() overwrites the CLAIMED marker
+                // with the provider message id on a successful send, so a suppressed duplicate can
+                // recover it. Null when the original send failed permanently or the claim predates
+                // confirm(), in which case this is still a report the receiver can act on.
                 metrics.duplicateSuppressed(phoneNumberId);
-                log.info("Duplicate suppressed; recipient was already dispatched");
-                resolve(send, null);
+                String priorMessageId = idempotency.claimedMessageId(recipient.recipientId());
+                log.info("Duplicate suppressed; recipient was already dispatched wamid={}",
+                        priorMessageId);
+                resolve(send, RecipientOutcome.accepted(
+                        recipient, priorMessageId, "accepted", send.attempts()));
                 return;
             }
 
@@ -268,8 +279,25 @@ public class SendExecutor {
         if (outcome != null) {
             resultCollector.record(send.batch(), outcome);
         }
-        if (send.batch().recordResolved()) {
+        if (!send.batch().recordResolved()) {
+            return;
+        }
+        try {
             resultCollector.completeBatch(send.batch());
+        } catch (RuntimeException e) {
+            // completeBatch publishes to Kafka and rethrows on failure. Letting that escape was a
+            // silent-loss path: called from execute()'s try block it landed in the catch below,
+            // which called resolve() a second time, decremented an already-zero counter, and threw
+            // again from inside a catch — so the batch's outcomes were lost, the offset was never
+            // acknowledged, and nothing above the executor ever heard about it. The symptom
+            // downstream is a campaign whose recipients stay PROCESSING and whose delivery
+            // receipts are dropped for a wamid nobody recorded.
+            //
+            // Logged here and swallowed deliberately: the offset stays uncommitted, so Kafka
+            // redelivers the whole batch and the idempotency claims make the redelivery safe.
+            log.error("Could not complete batch campaignId={} phoneNumberId={}; the offset will "
+                            + "not be acknowledged and Kafka will redeliver",
+                    send.batch().campaignId(), send.phoneNumberId(), e);
         }
     }
 

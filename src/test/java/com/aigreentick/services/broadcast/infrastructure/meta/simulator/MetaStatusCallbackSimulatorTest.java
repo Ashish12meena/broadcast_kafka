@@ -128,7 +128,7 @@ class MetaStatusCallbackSimulatorTest {
     @Test
     void aMissingAccountIdIsOmittedRatherThanPrintedAsNull() {
         MetaStatusWebhook webhook = simulator.buildPayload(
-                "123456789012345", null, "wamid.SIM.test", "919876543210", "sent");
+                "123456789012345", null, "wamid.SIM.test", "919876543210", "sent", null);
 
         assertNull(webhook.entry().get(0).id());
     }
@@ -138,6 +138,20 @@ class MetaStatusCallbackSimulatorTest {
         assertEquals("wamid.SIM.test", statusOf(build("delivered")).id());
         assertEquals("919876543210", statusOf(build("delivered")).recipientId());
         assertEquals("delivered", statusOf(build("delivered")).status());
+    }
+
+    @Test
+    void statusEchoesTheCallbackDataFromTheSendRequest() {
+        // The field the Messaging Service matches on before it matches on the wamid. Dropping it
+        // here would leave the simulated round trip passing while the real one still races.
+        assertEquals("msg:4242", statusOf(build("sent")).callbackData());
+    }
+
+    @Test
+    void aStatusWithNoCallbackDataOmitsTheKeyRatherThanSendingNull() {
+        assertNull(statusOf(simulator.buildPayload(
+                "123456789012345", 42L, "wamid.SIM.test", "919876543210", "sent", null))
+                .callbackData());
     }
 
     @Test
@@ -152,7 +166,7 @@ class MetaStatusCallbackSimulatorTest {
 
     private MetaStatusWebhook build(String status) {
         return simulator.buildPayload(
-                "123456789012345", 42L, "wamid.SIM.test", "919876543210", status);
+                "123456789012345", 42L, "wamid.SIM.test", "919876543210", status, "msg:4242");
     }
 
     private static MetaStatusWebhook.Status statusOf(MetaStatusWebhook webhook) {

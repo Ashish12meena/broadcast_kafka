@@ -62,7 +62,8 @@ public class SimulatedMetaClient implements MetaSendPort {
             SendResponse response = MetaResponseMapper.toSendResponse(envelope);
 
             callbackSimulator.scheduleFor(
-                    phoneNumberId, wabaAccountId, response.providerMessageId(), recipient);
+                    phoneNumberId, wabaAccountId, response.providerMessageId(), recipient,
+                    extractString(requestPayload, "biz_opaque_callback_data"));
 
             log.debug("Simulated send phoneNumberId={} to={} wamid={}",
                     phoneNumberId, recipient, response.providerMessageId());
@@ -94,14 +95,26 @@ public class SimulatedMetaClient implements MetaSendPort {
      * recipient's number appears — and the status webhook needs it for {@code recipient_id}.
      */
     private String extractRecipient(String requestPayload) {
+        return extractString(requestPayload, "to");
+    }
+
+    /**
+     * Reads one top-level string field out of the forwarded request body.
+     *
+     * <p>Used for {@code to} and for {@code biz_opaque_callback_data}. The latter is what the real
+     * Meta echoes on every status, and echoing it here is what makes the simulated round trip
+     * exercise the same correlation path production uses rather than a wamid-only shortcut that
+     * only works when the results topic wins a race.
+     */
+    private String extractString(String requestPayload, String field) {
         if (requestPayload == null || requestPayload.isBlank()) {
             return null;
         }
         try {
-            JsonNode to = objectMapper.readTree(requestPayload).get("to");
-            return to == null || to.isNull() ? null : to.asText();
+            JsonNode node = objectMapper.readTree(requestPayload).get(field);
+            return node == null || node.isNull() ? null : node.asText();
         } catch (Exception e) {
-            log.debug("No readable 'to' in the request payload");
+            log.debug("No readable '{}' in the request payload", field);
             return null;
         }
     }
