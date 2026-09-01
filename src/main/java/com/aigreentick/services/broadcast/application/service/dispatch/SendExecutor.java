@@ -34,14 +34,19 @@ import java.util.concurrent.TimeUnit;
  * Performs one send and decides what happens next.
  *
  * <h2>Concurrency is bounded here, rate is not</h2>
- * The semaphore caps how many sends this instance has in flight at once. It is not the rate limit —
- * that lives in Redis and is shared — it is a local bulkhead so one pod cannot exhaust its own
- * sockets. A local limit could never enforce the rate correctly anyway: it is right on one instance
+ * The semaphore caps how many sends this instance has in flight at once. It is
+ * not the rate limit —
+ * that lives in Redis and is shared — it is a local bulkhead so one pod cannot
+ * exhaust its own
+ * sockets. A local limit could never enforce the rate correctly anyway: it is
+ * right on one instance
  * and wrong on two.
  *
  * <h2>Retries go back through the meter</h2>
- * A retryable failure is put back on the queue rather than re-sent from here. It therefore has to
- * acquire tokens again like any other send, which makes a retry storm impossible by construction:
+ * A retryable failure is put back on the queue rather than re-sent from here.
+ * It therefore has to
+ * acquire tokens again like any other send, which makes a retry storm
+ * impossible by construction:
  * retrying costs capacity, so a number cannot exceed its rate by failing.
  */
 @Service
@@ -112,12 +117,17 @@ public class SendExecutor {
                 // Already sent by an earlier delivery of this batch, so Meta must not be called
                 // again. The outcome is still reported, and that is the correction: reporting
                 // nothing left the Messaging Service holding a row in PROCESSING with no result
-                // ever arriving, which ProcessingStuckCleanupJob eventually released and re-sent —
-                // producing the exact duplicate this guard exists to prevent, by way of the guard.
+                // ever arriving, which ProcessingStuckCleanupJob eventually released and
+                // re-sent —
+                // producing the exact duplicate this guard exists to prevent, by way of the
+                // guard.
                 //
-                // The wamid comes from the claim itself: confirm() overwrites the CLAIMED marker
-                // with the provider message id on a successful send, so a suppressed duplicate can
-                // recover it. Null when the original send failed permanently or the claim predates
+                // The wamid comes from the claim itself: confirm() overwrites the CLAIMED
+                // marker
+                // with the provider message id on a successful send, so a suppressed duplicate
+                // can
+                // recover it. Null when the original send failed permanently or the claim
+                // predates
                 // confirm(), in which case this is still a report the receiver can act on.
                 metrics.duplicateSuppressed(phoneNumberId);
                 String priorMessageId = idempotency.claimedMessageId(recipient.recipientId());
@@ -170,8 +180,10 @@ public class SendExecutor {
             metrics.sendDuration(phoneNumberId, elapsed);
 
             if (response.transportFailure()) {
-                // Only unreachability counts against the breaker. A business rejection means Meta is
-                // healthy and answering, and tripping on those would stop a working phone number.
+                // Only unreachability counts against the breaker. A business rejection means
+                // Meta is
+                // healthy and answering, and tripping on those would stop a working phone
+                // number.
                 breaker.onError(elapsed.toNanos(), TimeUnit.NANOSECONDS,
                         new IOException(response.errorMessage()));
             } else {
@@ -209,14 +221,16 @@ public class SendExecutor {
 
         switch (errorClass) {
             case RATE_LIMIT -> {
-                // The number is over its limit, so slow the number down rather than this message.
+                // The number is over its limit, so slow the number down rather than this
+                // message.
                 // Handling it as an ordinary per-message backoff would leave every other worker
                 // pushing the same number further over the limit.
                 degrader.degradeAfterRateLimit(phoneNumberId);
                 retryOrFail(send, errorCode, response.errorMessage(), attempt, Duration.ZERO);
             }
             case UPGRADE_IN_PROGRESS -> {
-                // The number is briefly unusable while Meta upgrades its throughput. Not a fault,
+                // The number is briefly unusable while Meta upgrades its throughput. Not a
+                // fault,
                 // and emphatically not a reason to reduce its rate.
                 degrader.suppressForUpgrade(phoneNumberId);
                 retryOrFail(send, errorCode, response.errorMessage(), attempt, Duration.ZERO);
@@ -224,13 +238,14 @@ public class SendExecutor {
             case PAIR_RATE_LIMIT ->
                 // Specific to this recipient. Degrading the number would throttle thousands of
                 // unrelated recipients over one person's message frequency.
-                    retryOrFail(send, errorCode, response.errorMessage(), attempt,
-                            retryPolicy.delayFor(attempt));
+                retryOrFail(send, errorCode, response.errorMessage(), attempt,
+                        retryPolicy.delayFor(attempt));
             case TRANSIENT ->
-                    retryOrFail(send, errorCode, response.errorMessage(), attempt,
-                            retryPolicy.delayFor(attempt));
+                retryOrFail(send, errorCode, response.errorMessage(), attempt,
+                        retryPolicy.delayFor(attempt));
             case CREDENTIAL -> {
-                // Retrying the payload cannot help; the token is the problem. Reported as retryable
+                // Retrying the payload cannot help; the token is the problem. Reported as
+                // retryable
                 // so the Messaging Service can refresh it and re-dispatch.
                 log.error("Meta rejected the access token errorCode={} message={}",
                         errorCode, response.errorMessage());
@@ -256,8 +271,10 @@ public class SendExecutor {
         }
 
         metrics.retryScheduled(send.phoneNumberId());
-        // Released so a retry is not blocked by its own earlier claim. The window in which a
-        // duplicate could slip through is the retry delay, and the queue holds only this instance's
+        // Released so a retry is not blocked by its own earlier claim. The window in
+        // which a
+        // duplicate could slip through is the retry delay, and the queue holds only
+        // this instance's
         // copy of the work.
         idempotency.release(send.recipient().recipientId());
 
@@ -270,9 +287,11 @@ public class SendExecutor {
     }
 
     /**
-     * Records the outcome and, if this was the batch's last recipient, completes the batch.
+     * Records the outcome and, if this was the batch's last recipient, completes
+     * the batch.
      *
-     * @param outcome null when the recipient needs no report, as with a suppressed duplicate whose
+     * @param outcome null when the recipient needs no report, as with a suppressed
+     *                duplicate whose
      *                original send was already reported
      */
     private void resolve(PendingSend send, RecipientOutcome outcome) {
@@ -285,18 +304,24 @@ public class SendExecutor {
         try {
             resultCollector.completeBatch(send.batch());
         } catch (RuntimeException e) {
-            // completeBatch publishes to Kafka and rethrows on failure. Letting that escape was a
-            // silent-loss path: called from execute()'s try block it landed in the catch below,
-            // which called resolve() a second time, decremented an already-zero counter, and threw
-            // again from inside a catch — so the batch's outcomes were lost, the offset was never
+            // completeBatch publishes to Kafka and rethrows on failure. Letting that escape
+            // was a
+            // silent-loss path: called from execute()'s try block it landed in the catch
+            // below,
+            // which called resolve() a second time, decremented an already-zero counter,
+            // and threw
+            // again from inside a catch — so the batch's outcomes were lost, the offset was
+            // never
             // acknowledged, and nothing above the executor ever heard about it. The symptom
             // downstream is a campaign whose recipients stay PROCESSING and whose delivery
             // receipts are dropped for a wamid nobody recorded.
             //
-            // Logged here and swallowed deliberately: the offset stays uncommitted, so Kafka
-            // redelivers the whole batch and the idempotency claims make the redelivery safe.
+            // Logged here and swallowed deliberately: the offset stays uncommitted, so
+            // Kafka
+            // redelivers the whole batch and the idempotency claims make the redelivery
+            // safe.
             log.error("Could not complete batch campaignId={} phoneNumberId={}; the offset will "
-                            + "not be acknowledged and Kafka will redeliver",
+                    + "not be acknowledged and Kafka will redeliver",
                     send.batch().campaignId(), send.phoneNumberId(), e);
         }
     }
@@ -304,7 +329,9 @@ public class SendExecutor {
     /**
      * Waits for in-flight sends to finish.
      *
-     * <p>Acquiring every permit is how it waits: once all of them are held, nothing is in flight.
+     * <p>
+     * Acquiring every permit is how it waits: once all of them are held, nothing is
+     * in flight.
      */
     @PreDestroy
     public void awaitInFlight() {
