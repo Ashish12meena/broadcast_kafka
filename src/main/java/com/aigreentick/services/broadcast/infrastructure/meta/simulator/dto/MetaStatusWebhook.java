@@ -43,17 +43,17 @@ public record MetaStatusWebhook(
     }
 
     /**
-     * @param id          the wamid returned by the send this status belongs to — the only link
-     *                    between the two, which is why the simulator reports back the same value it
-     *                    handed out
-     * @param timestamp   seconds since epoch as a string, as Meta sends it: not milliseconds, and
-     *                    not a number
+     * @param id           the wamid returned by the send this status belongs to — the only link
+     *                     between the two, which is why the simulator reports back the same value it
+     *                     handed out
+     * @param timestamp    seconds since epoch as a string, as Meta sends it: not milliseconds, and
+     *                     not a number
      * @param recipientId  the recipient's number in international format without a plus
-     * @param callbackData {@code biz_opaque_callback_data} exactly as it appeared on the send
-     *                     request. Meta echoes this on every status, and the Messaging Service
-     *                     matches on it before it matches on the wamid — so a simulator that
-     *                     dropped it would keep passing while hiding the one race the field
-     *                     exists to close
+     * @param callbackData whatever the sender put in {@code biz_opaque_callback_data} on the send,
+     *                     echoed back verbatim. Meta does not interpret this value and neither does
+     *                     the simulator — Messaging Service's correlation format ({@code msg:<id>})
+     *                     can therefore change without a coordinated release here. Absent until the
+     *                     send payload carries it, since {@code NON_NULL} drops the key entirely
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Status(

@@ -56,6 +56,7 @@ public class SimulatedMetaClient implements MetaSendPort {
         try {
             String wamid = generateWamid();
             String recipient = extractRecipient(requestPayload);
+            String callbackData = extractCallbackData(requestPayload);
 
             MetaSendResponse envelope =
                     objectMapper.readValue(acceptedBody(wamid, recipient), MetaSendResponse.class);
@@ -63,7 +64,7 @@ public class SimulatedMetaClient implements MetaSendPort {
 
             callbackSimulator.scheduleFor(
                     phoneNumberId, wabaAccountId, response.providerMessageId(), recipient,
-                    extractString(requestPayload, "biz_opaque_callback_data"));
+                    callbackData);
 
             log.debug("Simulated send phoneNumberId={} to={} wamid={}",
                     phoneNumberId, recipient, response.providerMessageId());
@@ -95,26 +96,37 @@ public class SimulatedMetaClient implements MetaSendPort {
      * recipient's number appears — and the status webhook needs it for {@code recipient_id}.
      */
     private String extractRecipient(String requestPayload) {
-        return extractString(requestPayload, "to");
-    }
-
-    /**
-     * Reads one top-level string field out of the forwarded request body.
-     *
-     * <p>Used for {@code to} and for {@code biz_opaque_callback_data}. The latter is what the real
-     * Meta echoes on every status, and echoing it here is what makes the simulated round trip
-     * exercise the same correlation path production uses rather than a wamid-only shortcut that
-     * only works when the results topic wins a race.
-     */
-    private String extractString(String requestPayload, String field) {
         if (requestPayload == null || requestPayload.isBlank()) {
             return null;
         }
         try {
-            JsonNode node = objectMapper.readTree(requestPayload).get(field);
-            return node == null || node.isNull() ? null : node.asText();
+            JsonNode to = objectMapper.readTree(requestPayload).get("to");
+            return to == null || to.isNull() ? null : to.asText();
         } catch (Exception e) {
-            log.debug("No readable '{}' in the request payload", field);
+            log.debug("No readable 'to' in the request payload");
+            return null;
+        }
+    }
+
+    /**
+     * Pulls {@code biz_opaque_callback_data} out of the request body so the status webhook can echo
+     * it, exactly as Meta does.
+     *
+     * <p>Read as an opaque string and never parsed. Messaging Service correlates on
+     * {@code msg:<messageId>}, but that prefix is theirs: interpreting it here would mean a change
+     * to their correlation format needed a coordinated broadcast release. Absent until their
+     * renderer sets it, and absent is a valid state rather than an error — the status simply carries
+     * no callback data and the receiver falls back to the wamid.
+     */
+    private String extractCallbackData(String requestPayload) {
+        if (requestPayload == null || requestPayload.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode data = objectMapper.readTree(requestPayload).get("biz_opaque_callback_data");
+            return data == null || data.isNull() ? null : data.asText();
+        } catch (Exception e) {
+            log.debug("No readable 'biz_opaque_callback_data' in the request payload");
             return null;
         }
     }
