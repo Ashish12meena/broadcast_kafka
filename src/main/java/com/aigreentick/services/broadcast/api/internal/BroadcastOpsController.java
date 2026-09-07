@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.api.internal;
 
 import com.aigreentick.services.broadcast.api.internal.dto.CapacityResponse;
+import com.aigreentick.services.broadcast.common.constants.APIPaths;
 import com.aigreentick.services.broadcast.api.internal.dto.DispatchStatsResponse;
 import com.aigreentick.services.broadcast.application.service.capacity.CapacityService;
 import com.aigreentick.services.broadcast.application.service.dispatch.DispatchScheduler;
@@ -19,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * the next capacity event, which is worse than having no override at all.
  */
 @RestController
-@RequestMapping("/internal/broadcast")
+@RequestMapping(APIPaths.INTERNAL_BROADCAST_BASE)
 public class BroadcastOpsController {
 
     private final DispatchScheduler scheduler;
@@ -35,7 +36,7 @@ public class BroadcastOpsController {
         this.capacityService = capacityService;
     }
 
-    @GetMapping("/stats")
+    @GetMapping(APIPaths.STATS)
     public DispatchStatsResponse stats() {
         return new DispatchStatsResponse(
                 scheduler.activeNumbers(),
@@ -45,8 +46,9 @@ public class BroadcastOpsController {
                 scheduler.depthByPhoneNumber());
     }
 
-    @GetMapping("/capacity/{phoneNumberId}")
-    public ResponseEntity<CapacityResponse> capacity(@PathVariable String phoneNumberId) {
+    @GetMapping(APIPaths.CAPACITY_BY_PHONE_NUMBER)
+    public ResponseEntity<CapacityResponse> capacity(
+            @PathVariable(APIPaths.PATH_VAR_PHONE_NUMBER_ID) String phoneNumberId) {
         return capacityService.find(phoneNumberId)
                 .map(capacity -> ResponseEntity.ok(new CapacityResponse(
                         capacity.phoneNumberId(),

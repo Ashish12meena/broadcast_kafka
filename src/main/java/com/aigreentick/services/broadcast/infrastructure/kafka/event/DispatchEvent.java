@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.event;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
@@ -37,21 +38,21 @@ public record DispatchEvent(
     /** @return null when the event is usable, otherwise why it is not */
     public String validationError() {
         if (campaignId == null) {
-            return "campaignId is missing";
+            return DomainConstants.Messages.VALIDATION_CAMPAIGN_ID_MISSING;
         }
         if (phoneNumberId == null || phoneNumberId.isBlank()) {
-            return "phoneNumberId is missing";
+            return DomainConstants.Messages.VALIDATION_PHONE_NUMBER_ID_MISSING;
         }
         if (accessToken == null || accessToken.isBlank()) {
-            return "accessToken is missing";
+            return DomainConstants.Messages.VALIDATION_ACCESS_TOKEN_MISSING;
         }
         if (payloads == null || payloads.isEmpty()) {
-            return "payloads is empty";
+            return DomainConstants.Messages.VALIDATION_PAYLOADS_EMPTY;
         }
         boolean anyPayloadMissing = payloads.stream()
                 .anyMatch(item -> item.requestPayload() == null || item.requestPayload().isBlank());
         if (anyPayloadMissing) {
-            return "one or more payloads have no request body";
+            return DomainConstants.Messages.VALIDATION_PAYLOAD_BODY_MISSING;
         }
         return null;
     }

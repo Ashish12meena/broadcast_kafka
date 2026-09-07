@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.config;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import io.netty.channel.ChannelOption;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -9,8 +10,6 @@ import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
-
-import java.time.Duration;
 
 /**
  * The HTTP client for Meta.
@@ -27,13 +26,20 @@ import java.time.Duration;
 @Configuration
 public class WebClientConfig {
 
+    /**
+     * Headroom for a brief burst to queue rather than be rejected. The real ceiling is
+     * {@code max-connections}; this only governs how many requests may wait for one.
+     */
+    private static final int PENDING_ACQUIRE_MULTIPLIER = 4;
+
     @Bean
     public WebClient metaWebClient(BroadcastProperties properties) {
         BroadcastProperties.Meta meta = properties.meta();
 
-        ConnectionProvider connectionProvider = ConnectionProvider.builder("meta")
+        ConnectionProvider connectionProvider =
+                ConnectionProvider.builder(DomainConstants.Meta.CONNECTION_POOL_NAME)
                 .maxConnections(meta.maxConnections())
-                .pendingAcquireMaxCount(meta.maxConnections() * 4)
+                .pendingAcquireMaxCount(meta.maxConnections() * PENDING_ACQUIRE_MULTIPLIER)
                 .pendingAcquireTimeout(meta.pendingAcquireTimeout())
                 .maxIdleTime(meta.idleTimeout())
                 .metrics(true)
@@ -48,10 +54,8 @@ public class WebClientConfig {
                 .baseUrl(meta.baseUrl())
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(256 * 1024))
+                .codecs(codecs -> codecs.defaultCodecs()
+                        .maxInMemorySize(DomainConstants.Meta.MAX_IN_MEMORY_RESPONSE_BYTES))
                 .build();
     }
-
-    /** Duration constant kept here so tests can reference the same value. */
-    public static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(15);
 }

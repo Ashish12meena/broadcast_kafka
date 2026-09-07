@@ -1,5 +1,8 @@
 package com.aigreentick.services.broadcast.domain.policy;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+
+
 /**
  * Translates Meta's throughput tier name into messages per second.
  *
@@ -32,9 +35,11 @@ public final class ThroughputTier {
             return defaultMps;
         }
         return switch (tier.trim().toUpperCase()) {
-            case "STANDARD" -> STANDARD_MPS;
-            case "HIGH_THROUGHPUT", "HIGH-THROUGHPUT", "HIGH" -> HIGH_THROUGHPUT_MPS;
-            case "COEXISTENCE", "CO_EXISTENCE" -> COEXISTENCE_MPS;
+            case DomainConstants.Meta.TIER_STANDARD -> STANDARD_MPS;
+            case DomainConstants.Meta.TIER_HIGH_THROUGHPUT,
+                 DomainConstants.Meta.TIER_HIGH_THROUGHPUT_HYPHENATED,
+                 DomainConstants.Meta.TIER_HIGH -> HIGH_THROUGHPUT_MPS;
+            case DomainConstants.Meta.TIER_COEXISTENCE, DomainConstants.Meta.TIER_CO_EXISTENCE -> COEXISTENCE_MPS;
             default -> defaultMps;
         };
     }

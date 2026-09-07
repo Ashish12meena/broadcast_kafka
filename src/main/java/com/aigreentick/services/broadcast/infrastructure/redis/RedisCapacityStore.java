@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.redis;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.CapacityStorePort;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
@@ -10,7 +12,6 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 
@@ -30,15 +31,6 @@ import java.util.Optional;
 public class RedisCapacityStore implements CapacityStorePort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisCapacityStore.class);
-
-    private static final Duration CAPACITY_TTL = Duration.ofHours(24);
-
-    private static final String FIELD_CONFIGURED = "configuredMps";
-    private static final String FIELD_EFFECTIVE = "effectiveMps";
-    private static final String FIELD_TIER = "tier";
-    private static final String FIELD_BACKOFF = "backoffUntilMs";
-    private static final String FIELD_UPDATED = "updatedAtMs";
-    private static final String FIELD_SOURCE = "source";
 
     private final StringRedisTemplate redis;
     private final CapacityMemory memory;
@@ -60,12 +52,14 @@ public class RedisCapacityStore implements CapacityStorePort {
             }
             PhoneNumberCapacity capacity = new PhoneNumberCapacity(
                     phoneNumberId,
-                    intValue(hash.get(FIELD_CONFIGURED), properties.rateLimit().defaultMps()),
-                    intValue(hash.get(FIELD_EFFECTIVE), properties.rateLimit().defaultMps()),
-                    stringValue(hash.get(FIELD_TIER)),
-                    longValue(hash.get(FIELD_BACKOFF)),
-                    longValue(hash.get(FIELD_UPDATED)),
-                    sourceValue(hash.get(FIELD_SOURCE)));
+                    intValue(hash.get(InfraConstants.Redis.FIELD_CONFIGURED_MPS),
+                            properties.rateLimit().defaultMps()),
+                    intValue(hash.get(InfraConstants.Redis.FIELD_EFFECTIVE_MPS),
+                            properties.rateLimit().defaultMps()),
+                    stringValue(hash.get(InfraConstants.Redis.FIELD_TIER)),
+                    longValue(hash.get(InfraConstants.Redis.FIELD_BACKOFF_UNTIL_MS)),
+                    longValue(hash.get(InfraConstants.Redis.FIELD_UPDATED_AT_MS)),
+                    sourceValue(hash.get(InfraConstants.Redis.FIELD_SOURCE)));
 
             memory.remember(capacity);
             return Optional.of(capacity);
@@ -85,13 +79,13 @@ public class RedisCapacityStore implements CapacityStorePort {
         try {
             String key = RedisKeys.capacity(capacity.phoneNumberId());
             redis.opsForHash().putAll(key, Map.of(
-                    FIELD_CONFIGURED, String.valueOf(capacity.configuredMps()),
-                    FIELD_EFFECTIVE, String.valueOf(capacity.effectiveMps()),
-                    FIELD_TIER, capacity.tier() == null ? "" : capacity.tier(),
-                    FIELD_BACKOFF, String.valueOf(capacity.backoffUntilMs()),
-                    FIELD_UPDATED, String.valueOf(capacity.updatedAtMs()),
-                    FIELD_SOURCE, capacity.source().name()));
-            redis.expire(key, CAPACITY_TTL);
+                    InfraConstants.Redis.FIELD_CONFIGURED_MPS, String.valueOf(capacity.configuredMps()),
+                    InfraConstants.Redis.FIELD_EFFECTIVE_MPS, String.valueOf(capacity.effectiveMps()),
+                    InfraConstants.Redis.FIELD_TIER, capacity.tier() == null ? "" : capacity.tier(),
+                    InfraConstants.Redis.FIELD_BACKOFF_UNTIL_MS, String.valueOf(capacity.backoffUntilMs()),
+                    InfraConstants.Redis.FIELD_UPDATED_AT_MS, String.valueOf(capacity.updatedAtMs()),
+                    InfraConstants.Redis.FIELD_SOURCE, capacity.source().name()));
+            redis.expire(key, InfraConstants.Redis.CAPACITY_TTL);
 
             log.info("Capacity applied phoneNumberId={} effectiveMps={} configuredMps={} tier={} source={}",
                     capacity.phoneNumberId(), capacity.effectiveMps(), capacity.configuredMps(),
@@ -108,11 +102,12 @@ public class RedisCapacityStore implements CapacityStorePort {
         try {
             String key = RedisKeys.capacity(phoneNumberId);
             redis.opsForHash().putAll(key, Map.of(
-                    FIELD_EFFECTIVE, String.valueOf(Math.max(1, newEffectiveMps)),
-                    FIELD_BACKOFF, String.valueOf(backoffUntilMs),
-                    FIELD_UPDATED, String.valueOf(System.currentTimeMillis()),
-                    FIELD_SOURCE, CapacitySource.DEGRADED.name()));
-            redis.expire(key, CAPACITY_TTL);
+                    InfraConstants.Redis.FIELD_EFFECTIVE_MPS, String.valueOf(
+                            Math.max(DomainConstants.Dispatch.MIN_EFFECTIVE_MPS, newEffectiveMps)),
+                    InfraConstants.Redis.FIELD_BACKOFF_UNTIL_MS, String.valueOf(backoffUntilMs),
+                    InfraConstants.Redis.FIELD_UPDATED_AT_MS, String.valueOf(System.currentTimeMillis()),
+                    InfraConstants.Redis.FIELD_SOURCE, CapacitySource.DEGRADED.name()));
+            redis.expire(key, InfraConstants.Redis.CAPACITY_TTL);
 
         } catch (DataAccessException e) {
             log.error("Could not degrade capacity phoneNumberId={} reason={}", phoneNumberId, e.toString());
@@ -124,7 +119,7 @@ public class RedisCapacityStore implements CapacityStorePort {
         try {
             Boolean acquired = redis.opsForValue().setIfAbsent(
                     RedisKeys.degradeLock(phoneNumberId),
-                    "1",
+                    InfraConstants.Redis.DEGRADE_LOCK_VALUE,
                     properties.rateLimit().degradeLockTtl());
             return Boolean.TRUE.equals(acquired);
 

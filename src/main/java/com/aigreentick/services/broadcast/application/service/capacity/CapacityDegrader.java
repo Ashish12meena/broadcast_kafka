@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.capacity;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.application.port.out.CapacityStorePort;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
@@ -57,7 +58,9 @@ public class CapacityDegrader {
         PhoneNumberCapacity current = capacityStore.find(phoneNumberId)
                 .orElseGet(() -> capacityService.defaultCapacity(phoneNumberId));
 
-        int reduced = Math.max(1, current.effectiveMps() / 2);
+        int reduced = Math.max(
+                DomainConstants.Dispatch.MIN_EFFECTIVE_MPS,
+                current.effectiveMps() / DomainConstants.Dispatch.DEGRADE_DIVISOR);
         long backoffUntil = System.currentTimeMillis() + properties.rateLimit().degradeLockTtl().toMillis();
 
         capacityStore.degrade(phoneNumberId, reduced, backoffUntil);

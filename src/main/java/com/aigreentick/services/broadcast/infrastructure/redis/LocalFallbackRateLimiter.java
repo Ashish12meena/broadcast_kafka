@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.redis;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.application.port.out.RateLimiterPort;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
@@ -51,7 +52,7 @@ public class LocalFallbackRateLimiter implements RateLimiterPort {
                 .orElse(settings.defaultMps());
 
         int share = (int) Math.floor(lastKnown * settings.fallbackFraction() / settings.assumedInstances());
-        return Math.max(1, share);
+        return Math.max(DomainConstants.Dispatch.MIN_EFFECTIVE_MPS, share);
     }
 
     /** Last-known capacity, remembered so a fallback is informed rather than blind. */
@@ -75,7 +76,8 @@ public class LocalFallbackRateLimiter implements RateLimiterPort {
                 lastRefillNanos = now;
             }
 
-            double elapsedSeconds = Math.max(0, now - lastRefillNanos) / 1_000_000_000d;
+            double elapsedSeconds =
+                    Math.max(0, now - lastRefillNanos) / DomainConstants.Dispatch.NANOS_PER_SECOND;
             tokens = Math.min(burst, tokens + elapsedSeconds * mps);
             lastRefillNanos = now;
 
@@ -85,7 +87,8 @@ public class LocalFallbackRateLimiter implements RateLimiterPort {
                 return RateGrant.of(granted, 0);
             }
 
-            long waitMicros = (long) Math.ceil((1 - tokens) * 1_000_000 / mps);
+            long waitMicros =
+                    (long) Math.ceil((1 - tokens) * DomainConstants.Dispatch.MICROS_PER_SECOND / mps);
             return RateGrant.none(Math.max(0, waitMicros));
         }
     }

@@ -1,6 +1,9 @@
 package com.aigreentick.services.broadcast.infrastructure.meta;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.MetaSendPort;
+import com.aigreentick.services.broadcast.common.constants.APIPaths;
 import com.aigreentick.services.broadcast.domain.model.SendResponse;
 import com.aigreentick.services.broadcast.infrastructure.meta.dto.MetaSendResponse;
 import org.slf4j.Logger;
@@ -31,13 +34,13 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * for no gain, since the loop's shape is inherently sequential per phone number.
  *
  * <h2>Not registered under the test profile</h2>
- * {@code @Profile("!test")} is what guarantees that a test-profile deployment cannot reach Meta:
- * under that profile this bean does not exist, so there is no path from the dispatch loop to the
+ * {@code @Profile(InfraConstants.Profile.NOT_TEST)} is what guarantees that a test-profile deployment
+ * cannot reach Meta: under that profile this bean does not exist, so there is no path to the
  * network. That is a stronger guarantee than an {@code if} inside the send method, which would leave
  * a live client wired up and one mistaken flag away from sending real messages.
  */
 @Component
-@Profile("!test")
+@Profile(InfraConstants.Profile.NOT_TEST)
 public class MetaCloudApiClient implements MetaSendPort {
 
     private static final Logger log = LoggerFactory.getLogger(MetaCloudApiClient.class);
@@ -54,8 +57,8 @@ public class MetaCloudApiClient implements MetaSendPort {
         // wabaAccountId is deliberately unused: Meta addresses the send by phone number id.
         try {
             MetaSendResponse response = metaWebClient.post()
-                    .uri("/{phoneNumberId}/messages", phoneNumberId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .uri(APIPaths.META_SEND_MESSAGE, phoneNumberId)
+                    .header(HttpHeaders.AUTHORIZATION, APIPaths.BEARER_PREFIX + accessToken)
                     .bodyValue(requestPayload)
                     // exchangeToMono rather than retrieve(): retrieve() raises on any non-2xx, which
                     // would discard the body. Meta puts the error code that decides retryability
@@ -71,7 +74,8 @@ public class MetaCloudApiClient implements MetaSendPort {
             // Meta answered but the body could not be read as the expected shape.
             log.warn("Unreadable Meta response phoneNumberId={} status={} body={}",
                     phoneNumberId, e.getStatusCode(), truncate(e.getResponseBodyAsString()));
-            return SendResponse.rejected(null, "Meta returned " + e.getStatusCode().value());
+            return SendResponse.rejected(null,
+                    DomainConstants.Messages.META_RETURNED_STATUS_FORMAT.formatted(e.getStatusCode().value()));
 
         } catch (WebClientRequestException e) {
             // Meta could not be reached: connection refused, DNS, pool exhaustion, timeout. This is
@@ -89,6 +93,9 @@ public class MetaCloudApiClient implements MetaSendPort {
         if (body == null) {
             return "";
         }
-        return body.length() <= 512 ? body : body.substring(0, 512) + "...";
+        return body.length() <= DomainConstants.Meta.RESPONSE_BODY_LOG_LIMIT
+                ? body
+                : body.substring(0, DomainConstants.Meta.RESPONSE_BODY_LOG_LIMIT)
+                        + DomainConstants.Meta.TRUNCATION_SUFFIX;
     }
 }

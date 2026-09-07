@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.listener;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.in.UpdateCapacityUseCase;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
@@ -32,9 +33,9 @@ public class CapacityEventListener {
     }
 
     @KafkaListener(
-            id = "broadcast-capacity-listener",
-            topics = "${broadcast.topics.capacity-updates}",
-            containerFactory = "capacityListenerFactory")
+            id = InfraConstants.Kafka.CAPACITY_LISTENER_ID,
+            topics = InfraConstants.ConfigKeys.TOPIC_CAPACITY_UPDATES,
+            containerFactory = InfraConstants.Kafka.CAPACITY_LISTENER_FACTORY)
     public void onCapacityEvent(@Payload String rawMessage) {
         try {
             // Compaction tombstones arrive as null values and mean the number was removed. Nothing

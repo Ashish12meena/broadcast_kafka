@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.publisher;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.application.port.out.DeadLetterPort;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
@@ -26,8 +28,6 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
 
     private static final Logger log = LoggerFactory.getLogger(DeadLetterEventPublisher.class);
 
-    private static final long PUBLISH_TIMEOUT_SECONDS = 10;
-
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final BroadcastProperties properties;
     private final BroadcastMetrics metrics;
@@ -47,14 +47,16 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
                 properties.topics().deadLetter(), null, rawPayload);
 
         record.headers()
-                .add(header("dlq-reason", reason))
-                .add(header("dlq-source-topic", sourceTopic))
-                .add(header("dlq-partition", String.valueOf(partition)))
-                .add(header("dlq-offset", String.valueOf(offset)))
-                .add(header("dlq-timestamp", String.valueOf(System.currentTimeMillis())));
+                .add(header(InfraConstants.Kafka.HEADER_DLQ_REASON, reason))
+                .add(header(InfraConstants.Kafka.HEADER_DLQ_SOURCE_TOPIC, sourceTopic))
+                .add(header(InfraConstants.Kafka.HEADER_DLQ_PARTITION, String.valueOf(partition)))
+                .add(header(InfraConstants.Kafka.HEADER_DLQ_OFFSET, String.valueOf(offset)))
+                .add(header(InfraConstants.Kafka.HEADER_DLQ_TIMESTAMP,
+                        String.valueOf(System.currentTimeMillis())));
 
         try {
-            kafkaTemplate.send(record).get(PUBLISH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            kafkaTemplate.send(record)
+                    .get(InfraConstants.Kafka.DEAD_LETTER_PUBLISH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             metrics.deadLettered(shortReason(reason));
             log.warn("Dead-lettered a message from {}-{} offset {}: {}",
                     sourceTopic, partition, offset, reason);
@@ -77,8 +79,10 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
     /** Keeps the metric tag to a bounded set of values rather than one per exception message. */
     private static String shortReason(String reason) {
         if (reason == null) {
-            return "unknown";
+            return ObservabilityConstants.Metrics.DEAD_LETTER_REASON_UNKNOWN;
         }
-        return reason.startsWith("deserialization") ? "deserialization" : "validation";
+        return reason.startsWith(ObservabilityConstants.Metrics.DEAD_LETTER_REASON_DESERIALIZATION)
+                ? ObservabilityConstants.Metrics.DEAD_LETTER_REASON_DESERIALIZATION
+                : ObservabilityConstants.Metrics.DEAD_LETTER_REASON_VALIDATION;
     }
 }

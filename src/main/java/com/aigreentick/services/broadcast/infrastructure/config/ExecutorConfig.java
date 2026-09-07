@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.config;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -27,10 +28,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ExecutorConfig {
 
     /** Runs one drain loop per active phone number, plus the individual sends they submit. */
-    @Bean(name = "dispatchExecutor", destroyMethod = "close")
+    @Bean(name = InfraConstants.Executor.DISPATCH_EXECUTOR,
+            destroyMethod = InfraConstants.Executor.DESTROY_METHOD_CLOSE)
     public ExecutorService dispatchExecutor() {
         return Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name("dispatch-", 0).factory());
+                Thread.ofVirtual().name(InfraConstants.Executor.DISPATCH_THREAD_PREFIX, 0).factory());
     }
 
     /**
@@ -39,14 +41,17 @@ public class ExecutorConfig {
      * <p>Platform threads, not virtual: scheduled executors hold their threads for the lifetime of
      * the service, and there are only a handful of them.
      */
-    @Bean(name = "schedulerExecutor", destroyMethod = "shutdownNow")
+    @Bean(name = InfraConstants.Executor.SCHEDULER_EXECUTOR,
+            destroyMethod = InfraConstants.Executor.DESTROY_METHOD_SHUTDOWN_NOW)
     public ScheduledExecutorService schedulerExecutor() {
         AtomicLong counter = new AtomicLong();
         ThreadFactory factory = runnable -> {
-            Thread thread = new Thread(runnable, "broadcast-sched-" + counter.incrementAndGet());
+            Thread thread = new Thread(
+                    runnable,
+                    InfraConstants.Executor.SCHEDULER_THREAD_PREFIX + counter.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         };
-        return Executors.newScheduledThreadPool(2, factory);
+        return Executors.newScheduledThreadPool(InfraConstants.Executor.SCHEDULER_POOL_SIZE, factory);
     }
 }

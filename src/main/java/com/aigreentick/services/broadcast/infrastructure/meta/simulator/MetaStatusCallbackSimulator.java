@@ -1,5 +1,8 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.SimulatorConstants;
 import com.aigreentick.services.broadcast.infrastructure.meta.simulator.dto.MetaStatusWebhook;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -68,12 +71,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * abandoned.
  */
 @Component
-@Profile("test")
+@Profile(InfraConstants.Profile.TEST)
 public class MetaStatusCallbackSimulator {
 
     private static final Logger log = LoggerFactory.getLogger(MetaStatusCallbackSimulator.class);
-
-    private static final List<String> PROGRESSION = List.of("sent", "delivered", "read");
 
     private final WebClient callbackWebClient;
     private final MetaSimulatorProperties properties;
@@ -84,14 +85,11 @@ public class MetaStatusCallbackSimulator {
      * that run sends concurrently. {@code onBackpressureBuffer} keeps a bounded overflow visible as
      * a rejected emission rather than an unbounded heap of pending callbacks.
      */
-    private final Sinks.Many<PendingCallback> pending =
-            Sinks.many().multicast().onBackpressureBuffer(4096, false);
+    private final Sinks.Many<PendingCallback> pending = Sinks.many().multicast()
+            .onBackpressureBuffer(SimulatorConstants.PENDING_CALLBACK_BUFFER, false);
 
     /** Counted rather than logged per occurrence: under overflow this would be the loudest line. */
     private final AtomicLong dropped = new AtomicLong();
-
-    /** How often {@link #reportDrops()} summarises. Frequent enough to notice mid-broadcast. */
-    private static final Duration DROP_REPORT_INTERVAL = Duration.ofSeconds(10);
 
     private Disposable subscription;
     private Disposable reporter;
@@ -100,7 +98,7 @@ public class MetaStatusCallbackSimulator {
     private long lastReported;
 
     public MetaStatusCallbackSimulator(
-            @Qualifier("simulatorCallbackWebClient") WebClient callbackWebClient,
+            @Qualifier(SimulatorConstants.CALLBACK_WEB_CLIENT) WebClient callbackWebClient,
             MetaSimulatorProperties properties) {
         this.callbackWebClient = callbackWebClient;
         this.properties = properties;
@@ -119,7 +117,9 @@ public class MetaStatusCallbackSimulator {
                 .flatMap(this::post, properties.maxInFlight())
                 .subscribe();
 
-        reporter = Flux.interval(DROP_REPORT_INTERVAL, DROP_REPORT_INTERVAL)
+        reporter = Flux.interval(
+                        SimulatorConstants.DROP_REPORT_INTERVAL,
+                        SimulatorConstants.DROP_REPORT_INTERVAL)
                 .subscribe(tick -> reportDrops());
     }
 
@@ -154,8 +154,9 @@ public class MetaStatusCallbackSimulator {
         }
         lastReported = total;
         log.warn("{} simulated status callbacks dropped by backpressure in the last {}s ({} total). "
-                        + "Raise broadcast.simulator.max-in-flight and max-connections together.",
-                since, DROP_REPORT_INTERVAL.toSeconds(), total);
+                        + "Raise {} and {} together.",
+                since, SimulatorConstants.DROP_REPORT_INTERVAL.toSeconds(), total,
+                InfraConstants.ConfigKeys.SIMULATOR_MAX_IN_FLIGHT_KEY, InfraConstants.ConfigKeys.SIMULATOR_MAX_CONNECTIONS_KEY);
     }
 
     /**
@@ -179,8 +180,8 @@ public class MetaStatusCallbackSimulator {
 
         if (!properties.callbacksEnabled()) {
             if (warnedNoUrl.compareAndSet(false, true)) {
-                log.warn("broadcast.simulator.callback-url is not set; sends are simulated but no "
-                        + "delivery statuses will be posted");
+                log.warn("{} is not set; sends are simulated but no delivery statuses will be posted",
+                        InfraConstants.ConfigKeys.SIMULATOR_CALLBACK_URL_KEY);
             }
             return;
         }
@@ -189,7 +190,7 @@ public class MetaStatusCallbackSimulator {
             String recipient = normalisePhone(recipientPhone);
             Duration cumulative = Duration.ZERO;
 
-            for (String status : PROGRESSION) {
+            for (String status : DomainConstants.Meta.STATUS_PROGRESSION) {
                 cumulative = cumulative.plus(
                         randomDelay(properties.minDelay(), properties.maxDelay()));
                 emit(new PendingCallback(
@@ -209,9 +210,9 @@ public class MetaStatusCallbackSimulator {
             long total = dropped.incrementAndGet();
             if (total == 1) {
                 log.warn("Simulated status callbacks are being dropped by backpressure "
-                        + "(first at wamid={} status={}, reason={}). Consider raising "
-                        + "broadcast.simulator.max-in-flight.",
-                        callback.wamid(), callback.status(), result);
+                        + "(first at wamid={} status={}, reason={}). Consider raising {}.",
+                        callback.wamid(), callback.status(), result,
+                        InfraConstants.ConfigKeys.SIMULATOR_MAX_IN_FLIGHT_KEY);
             }
         }
     }
@@ -272,15 +273,16 @@ public class MetaStatusCallbackSimulator {
                 new MetaStatusWebhook.Status(wamid, status, timestamp, recipient, callbackData);
 
         MetaStatusWebhook.Value value = new MetaStatusWebhook.Value(
-                "whatsapp",
+                DomainConstants.Meta.MESSAGING_PRODUCT_WHATSAPP,
                 new MetaStatusWebhook.Metadata(phoneNumberId),
                 List.of(statusBlock));
 
         return new MetaStatusWebhook(
-                "whatsapp_business_account",
+                DomainConstants.Meta.WEBHOOK_OBJECT_ACCOUNT,
                 List.of(new MetaStatusWebhook.Entry(
                         wabaAccountId == null ? null : String.valueOf(wabaAccountId),
-                        List.of(new MetaStatusWebhook.Change(value, "messages")))));
+                        List.of(new MetaStatusWebhook.Change(
+                                value, DomainConstants.Meta.WEBHOOK_FIELD_MESSAGES)))));
     }
 
     static Duration randomDelay(Duration min, Duration max) {
@@ -295,9 +297,9 @@ public class MetaStatusCallbackSimulator {
     /** Meta reports recipients in international format with no plus sign. */
     static String normalisePhone(String phone) {
         if (phone == null || phone.isBlank()) {
-            return "0000000000";
+            return SimulatorConstants.UNKNOWN_RECIPIENT;
         }
-        return phone.replaceAll("[^0-9]", "");
+        return phone.replaceAll(SimulatorConstants.NON_DIGIT_PATTERN, "");
     }
 
     private record PendingCallback(

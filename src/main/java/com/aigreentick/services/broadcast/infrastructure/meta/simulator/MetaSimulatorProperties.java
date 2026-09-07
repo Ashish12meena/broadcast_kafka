@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.SimulatorConstants;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -35,7 +37,7 @@ import java.util.Map;
  *                        hung receiver wedges the pool permanently instead of briefly
  * @param connectTimeout  how long to wait for the TCP connection itself
  */
-@ConfigurationProperties(prefix = "broadcast.simulator")
+@ConfigurationProperties(prefix = InfraConstants.ConfigKeys.SIMULATOR_PREFIX)
 public record MetaSimulatorProperties(
         String callbackUrl,
         Map<String, String> headers,
@@ -53,38 +55,44 @@ public record MetaSimulatorProperties(
         // and exercises the receiver's out-of-order handling — but the magnitude buys nothing
         // except waiting. Seconds-long defaults made a broadcast take minutes to produce statuses
         // that a real Meta account returns in well under one.
-        minDelay = minDelay == null ? Duration.ofMillis(200) : minDelay;
-        maxDelay = maxDelay == null ? Duration.ofSeconds(2) : maxDelay;
+        minDelay = minDelay == null ? SimulatorConstants.DEFAULT_MIN_DELAY : minDelay;
+        maxDelay = maxDelay == null ? SimulatorConstants.DEFAULT_MAX_DELAY : maxDelay;
 
         // Both raised from 32, and raised together. 128 concurrent posts against a receiver
         // answering in tens of milliseconds clears the ~240 callbacks per second that Meta's
         // standard 80 mps tier implies, with headroom for the 1000 mps tier's bursts to queue
         // in the sink rather than be dropped.
-        maxConnections = maxConnections == null ? 128 : maxConnections;
-        maxInFlight = maxInFlight == null ? 128 : maxInFlight;
-        responseTimeout = responseTimeout == null ? Duration.ofSeconds(10) : responseTimeout;
-        connectTimeout = connectTimeout == null ? Duration.ofSeconds(3) : connectTimeout;
+        maxConnections =
+                maxConnections == null ? SimulatorConstants.DEFAULT_MAX_CONNECTIONS : maxConnections;
+        maxInFlight = maxInFlight == null ? SimulatorConstants.DEFAULT_MAX_IN_FLIGHT : maxInFlight;
+        responseTimeout = responseTimeout == null
+                ? SimulatorConstants.DEFAULT_RESPONSE_TIMEOUT
+                : responseTimeout;
+        connectTimeout = connectTimeout == null
+                ? SimulatorConstants.DEFAULT_CONNECT_TIMEOUT
+                : connectTimeout;
 
         if (maxDelay.compareTo(minDelay) < 0) {
-            throw new IllegalArgumentException(
-                    "broadcast.simulator.max-delay must be >= min-delay");
+            throw new IllegalArgumentException("%s must be >= %s"
+                    .formatted(InfraConstants.ConfigKeys.SIMULATOR_MAX_DELAY_KEY, InfraConstants.ConfigKeys.SIMULATOR_MIN_DELAY_KEY));
         }
         if (maxConnections < 1) {
             throw new IllegalArgumentException(
-                    "broadcast.simulator.max-connections must be >= 1");
+                    "%s must be >= 1".formatted(InfraConstants.ConfigKeys.SIMULATOR_MAX_CONNECTIONS_KEY));
         }
         if (maxInFlight < 1) {
             throw new IllegalArgumentException(
-                    "broadcast.simulator.max-in-flight must be >= 1");
+                    "%s must be >= 1".formatted(InfraConstants.ConfigKeys.SIMULATOR_MAX_IN_FLIGHT_KEY));
         }
         if (maxInFlight > maxConnections) {
             // Rejected rather than clamped. This configuration does not fail loudly at runtime — it
             // overflows the pending-acquire queue and drops callbacks, which reads as a slow
             // simulator rather than a misconfigured one. Better to refuse to start.
             throw new IllegalArgumentException(
-                    "broadcast.simulator.max-in-flight (%d) must not exceed max-connections (%d); "
-                            .formatted(maxInFlight, maxConnections)
-                            + "the excess would be rejected by the connection pool, not queued");
+                    "%s (%d) must not exceed %s (%d); the excess would be rejected by the "
+                            .formatted(InfraConstants.ConfigKeys.SIMULATOR_MAX_IN_FLIGHT_KEY, maxInFlight,
+                                    InfraConstants.ConfigKeys.SIMULATOR_MAX_CONNECTIONS_KEY, maxConnections)
+                            + "connection pool, not queued");
         }
     }
 

@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.application.service.ingest;
 
+
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -75,7 +77,8 @@ public final class PhoneNumberQueue {
      * by a campaign with small batches.
      */
     public List<PendingSend> drain(int max) {
-        List<PendingSend> drained = new ArrayList<>(Math.min(max, 128));
+        List<PendingSend> drained =
+                new ArrayList<>(Math.min(max, DomainConstants.Dispatch.DRAIN_LIST_INITIAL_CAPACITY));
 
         // Retries first, and outside the lock: they came from send threads and need no rotation.
         while (drained.size() < max) {

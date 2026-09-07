@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.config;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -15,7 +16,7 @@ import java.time.Duration;
  * the design. What lives here is how this instance behaves: chunk sizes, pool sizes, timeouts.
  */
 @Validated
-@ConfigurationProperties(prefix = "broadcast")
+@ConfigurationProperties(prefix = InfraConstants.ConfigKeys.BROADCAST_PREFIX)
 public record BroadcastProperties(
         Dispatch dispatch,
         RateLimit rateLimit,

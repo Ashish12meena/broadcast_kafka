@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -18,20 +19,16 @@ import java.util.Map;
  * downtime. Enable it for local development, where the convenience is worth more.
  */
 @Configuration
-@ConditionalOnProperty(value = "broadcast.kafka.auto-create-topics", havingValue = "true")
+@ConditionalOnProperty(
+        value = InfraConstants.ConfigKeys.KAFKA_AUTO_CREATE_TOPICS,
+        havingValue = InfraConstants.ConfigKeys.ENABLED_TRUE)
 public class KafkaTopicsConfig {
-
-    /**
-     * Divisible by 2, 3, 4, 6, 8 and 12, so instance counts in that range each get an equal share of
-     * partitions rather than an uneven split where one pod does twice the work.
-     */
-    private static final int DISPATCH_PARTITIONS = 24;
 
     @Bean
     public NewTopic outboundMessagesTopic(BroadcastProperties properties) {
         return TopicBuilder.name(properties.topics().outboundMessages())
-                .partitions(DISPATCH_PARTITIONS)
-                .replicas(1)
+                .partitions(InfraConstants.Kafka.DISPATCH_PARTITIONS)
+                .replicas(InfraConstants.Kafka.DEFAULT_REPLICAS)
                 .build();
     }
 
@@ -43,30 +40,32 @@ public class KafkaTopicsConfig {
     @Bean
     public NewTopic capacityUpdatesTopic(BroadcastProperties properties) {
         return TopicBuilder.name(properties.topics().capacityUpdates())
-                .partitions(3)
-                .replicas(1)
+                .partitions(InfraConstants.Kafka.LOW_VOLUME_PARTITIONS)
+                .replicas(InfraConstants.Kafka.DEFAULT_REPLICAS)
                 .configs(Map.of(
-                        "cleanup.policy", "compact",
-                        "min.cleanable.dirty.ratio", "0.1",
-                        "segment.ms", "60000"))
+                        InfraConstants.Kafka.CONFIG_CLEANUP_POLICY, InfraConstants.Kafka.CLEANUP_POLICY_COMPACT,
+                        InfraConstants.Kafka.CONFIG_MIN_CLEANABLE_DIRTY_RATIO,
+                        InfraConstants.Kafka.MIN_CLEANABLE_DIRTY_RATIO,
+                        InfraConstants.Kafka.CONFIG_SEGMENT_MS, InfraConstants.Kafka.CAPACITY_SEGMENT_MS))
                 .build();
     }
 
     @Bean
     public NewTopic messageResultsTopic(BroadcastProperties properties) {
         return TopicBuilder.name(properties.topics().messageResults())
-                .partitions(DISPATCH_PARTITIONS)
-                .replicas(1)
+                .partitions(InfraConstants.Kafka.DISPATCH_PARTITIONS)
+                .replicas(InfraConstants.Kafka.DEFAULT_REPLICAS)
                 .build();
     }
 
     @Bean
     public NewTopic deadLetterTopic(BroadcastProperties properties) {
         return TopicBuilder.name(properties.topics().deadLetter())
-                .partitions(3)
-                .replicas(1)
+                .partitions(InfraConstants.Kafka.LOW_VOLUME_PARTITIONS)
+                .replicas(InfraConstants.Kafka.DEFAULT_REPLICAS)
                 // Long retention: a dead letter is investigated by a human, on human timescales.
-                .config("retention.ms", String.valueOf(30L * 24 * 60 * 60 * 1000))
+                .config(InfraConstants.Kafka.CONFIG_RETENTION_MS,
+                        String.valueOf(InfraConstants.Kafka.DEAD_LETTER_RETENTION_MS))
                 .build();
     }
 }

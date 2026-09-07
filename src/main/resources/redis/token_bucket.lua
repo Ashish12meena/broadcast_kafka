@@ -11,6 +11,10 @@
 -- KEYS[2] wa:cap:{phoneNumberId}   capacity, written by the capacity listener
 --         The braces are a Redis Cluster hash tag, so both keys land on the same slot.
 --
+-- Both keys are built by RedisKeys from the prefixes in RedisConstants, and the capacity fields
+-- read below ('effectiveMps', 'backoffUntilMs') are named there too. Lua cannot import them, so a
+-- rename has to be made on both sides — InfraConstants.Redis is the other half of this contract.
+--
 -- ARGV[1] nowMicros
 -- ARGV[2] requested
 -- ARGV[3] burstSeconds

@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.redis;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.IdempotencyPort;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import org.slf4j.Logger;
@@ -31,8 +32,6 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisIdempotencyGuard.class);
 
-    private static final String CLAIMED = "CLAIMED";
-
     private final StringRedisTemplate redis;
     private final BroadcastProperties properties;
 
@@ -48,7 +47,9 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
         }
         try {
             Boolean acquired = redis.opsForValue().setIfAbsent(
-                    RedisKeys.sentClaim(recipientId), CLAIMED, properties.idempotency().claimTtl());
+                    RedisKeys.sentClaim(recipientId),
+                    InfraConstants.Redis.CLAIM_MARKER,
+                    properties.idempotency().claimTtl());
             return Boolean.TRUE.equals(acquired);
 
         } catch (DataAccessException e) {
@@ -77,9 +78,9 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
         }
         try {
             String value = redis.opsForValue().get(RedisKeys.sentClaim(recipientId));
-            // CLAIMED means the claim was taken but confirm() never ran — an in-flight send, or one
-            // that failed before it got a wamid. Either way there is no message id to report.
-            return CLAIMED.equals(value) ? null : value;
+            // The bare marker means the claim was taken but confirm() never ran — an in-flight
+            // send, or one that failed before it got a wamid. Either way there is no id to report.
+            return InfraConstants.Redis.CLAIM_MARKER.equals(value) ? null : value;
 
         } catch (DataAccessException e) {
             log.debug("Could not read claim recipientId={} reason={}", recipientId, e.toString());

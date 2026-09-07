@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,27 +27,27 @@ import java.util.Map;
 @Configuration
 public class KafkaConsumerConfig {
 
-    @Value("${spring.kafka.bootstrap-servers}")
+    @Value(InfraConstants.ConfigKeys.KAFKA_BOOTSTRAP_SERVERS)
     private String bootstrapServers;
 
-    @Value("${spring.kafka.consumer.group-id:broadcast-service}")
+    @Value(InfraConstants.ConfigKeys.KAFKA_CONSUMER_GROUP_ID)
     private String groupId;
 
-    @Value("${spring.kafka.consumer.max-poll-records:100}")
+    @Value(InfraConstants.ConfigKeys.KAFKA_MAX_POLL_RECORDS)
     private int maxPollRecords;
 
-    @Value("${broadcast.kafka.dispatch-concurrency:6}")
+    @Value(InfraConstants.ConfigKeys.KAFKA_DISPATCH_CONCURRENCY)
     private int dispatchConcurrency;
 
     @Bean
     public ConsumerFactory<String, String> dispatchConsumerFactory() {
         Map<String, Object> config = baseConsumerConfig(groupId);
         config.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords);
-        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, InfraConstants.Kafka.AUTO_OFFSET_RESET_EARLIEST);
         return new DefaultKafkaConsumerFactory<>(config);
     }
 
-    @Bean(name = "dispatchListenerFactory")
+    @Bean(name = InfraConstants.Kafka.DISPATCH_LISTENER_FACTORY)
     public ConcurrentKafkaListenerContainerFactory<String, String> dispatchListenerFactory() {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
@@ -70,19 +71,19 @@ public class KafkaConsumerConfig {
     @Bean
     public ConsumerFactory<String, String> capacityConsumerFactory() {
         Map<String, Object> config = baseConsumerConfig(
-                groupId + "-capacity-" + java.util.UUID.randomUUID());
-        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+                groupId + InfraConstants.Kafka.CAPACITY_GROUP_SUFFIX + java.util.UUID.randomUUID());
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, InfraConstants.Kafka.AUTO_OFFSET_RESET_EARLIEST);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
         return new DefaultKafkaConsumerFactory<>(config);
     }
 
-    @Bean(name = "capacityListenerFactory")
+    @Bean(name = InfraConstants.Kafka.CAPACITY_LISTENER_FACTORY)
     public ConcurrentKafkaListenerContainerFactory<String, String> capacityListenerFactory() {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(capacityConsumerFactory());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
-        factory.setConcurrency(1);
+        factory.setConcurrency(InfraConstants.Kafka.CAPACITY_CONCURRENCY);
         return factory;
     }
 
@@ -93,7 +94,7 @@ public class KafkaConsumerConfig {
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        config.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
+        config.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, InfraConstants.Kafka.FETCH_MAX_WAIT_MS);
         return config;
     }
 }

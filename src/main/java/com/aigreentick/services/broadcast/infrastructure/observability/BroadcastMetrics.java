@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.observability;
 
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.policy.MetaErrorClass;
 import io.micrometer.core.instrument.Counter;
@@ -43,29 +44,29 @@ public class BroadcastMetrics {
     public BroadcastMetrics(MeterRegistry registry) {
         this.registry = registry;
 
-        registry.gauge("broadcast.inflight", inFlight);
-        registry.gauge("broadcast.queue.depth", queueDepth);
-        registry.gauge("broadcast.queue.active_numbers", activeNumbers);
-        registry.gauge("broadcast.consumer.paused", consumerPaused);
-        registry.gauge("broadcast.capacity.last_update_age_ms", lastCapacityUpdateMs,
+        registry.gauge(ObservabilityConstants.Metrics.INFLIGHT, inFlight);
+        registry.gauge(ObservabilityConstants.Metrics.QUEUE_DEPTH, queueDepth);
+        registry.gauge(ObservabilityConstants.Metrics.QUEUE_ACTIVE_NUMBERS, activeNumbers);
+        registry.gauge(ObservabilityConstants.Metrics.CONSUMER_PAUSED, consumerPaused);
+        registry.gauge(ObservabilityConstants.Metrics.CAPACITY_LAST_UPDATE_AGE_MS, lastCapacityUpdateMs,
                 value -> value.get() == 0 ? 0 : System.currentTimeMillis() - value.get());
     }
 
     // ----------------------------------------------------------------- rate
 
     public void tokensRequested(String phoneNumberId, int count) {
-        counter("broadcast.tokens.requested", phoneNumberId).increment(count);
+        counter(ObservabilityConstants.Metrics.TOKENS_REQUESTED, phoneNumberId).increment(count);
     }
 
     public void tokensGranted(String phoneNumberId, int count) {
         if (count > 0) {
-            counter("broadcast.tokens.granted", phoneNumberId).increment(count);
+            counter(ObservabilityConstants.Metrics.TOKENS_GRANTED, phoneNumberId).increment(count);
         }
     }
 
     public void rateLimitWait(String phoneNumberId, Duration waited) {
-        Timer.builder("broadcast.tokens.wait")
-                .tag("phone_number_id", phoneNumberId)
+        Timer.builder(ObservabilityConstants.Metrics.TOKENS_WAIT)
+                .tag(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, phoneNumberId)
                 .register(registry)
                 .record(waited);
     }
@@ -73,14 +74,14 @@ public class BroadcastMetrics {
     // ------------------------------------------------------------- capacity
 
     public void capacity(String phoneNumberId, int effective, int configured, CapacitySource source) {
-        gauge(effectiveMps, "broadcast.capacity.effective_mps", phoneNumberId).set(effective);
-        gauge(configuredMps, "broadcast.capacity.configured_mps", phoneNumberId).set(configured);
-        gauge(capacitySource, "broadcast.capacity.source", phoneNumberId).set(source.ordinal());
+        gauge(effectiveMps, ObservabilityConstants.Metrics.CAPACITY_EFFECTIVE_MPS, phoneNumberId).set(effective);
+        gauge(configuredMps, ObservabilityConstants.Metrics.CAPACITY_CONFIGURED_MPS, phoneNumberId).set(configured);
+        gauge(capacitySource, ObservabilityConstants.Metrics.CAPACITY_SOURCE, phoneNumberId).set(source.ordinal());
         lastCapacityUpdateMs.set(System.currentTimeMillis());
     }
 
     public void degraded(String phoneNumberId) {
-        counter("broadcast.capacity.degraded", phoneNumberId).increment();
+        counter(ObservabilityConstants.Metrics.CAPACITY_DEGRADED, phoneNumberId).increment();
     }
 
     // ----------------------------------------------------------------- send
@@ -94,40 +95,45 @@ public class BroadcastMetrics {
     }
 
     public void sendDuration(String phoneNumberId, Duration duration) {
-        Timer.builder("broadcast.send.duration")
-                .tag("phone_number_id", phoneNumberId)
-                .publishPercentiles(0.5, 0.95, 0.99)
+        Timer.builder(ObservabilityConstants.Metrics.SEND_DURATION)
+                .tag(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, phoneNumberId)
+                .publishPercentiles(
+                        ObservabilityConstants.Metrics.PERCENTILE_P50,
+                        ObservabilityConstants.Metrics.PERCENTILE_P95,
+                        ObservabilityConstants.Metrics.PERCENTILE_P99)
                 .register(registry)
                 .record(duration);
     }
 
     public void sendResult(String phoneNumberId, boolean success, String errorCode) {
-        Counter.builder("broadcast.send.result")
-                .tag("phone_number_id", phoneNumberId)
-                .tag("outcome", success ? "accepted" : "rejected")
-                .tag("error_code", errorCode == null ? "none" : errorCode)
+        Counter.builder(ObservabilityConstants.Metrics.SEND_RESULT)
+                .tag(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, phoneNumberId)
+                .tag(ObservabilityConstants.Metrics.TAG_OUTCOME,
+                        success ? ObservabilityConstants.Metrics.OUTCOME_ACCEPTED : ObservabilityConstants.Metrics.OUTCOME_REJECTED)
+                .tag(ObservabilityConstants.Metrics.TAG_ERROR_CODE,
+                        errorCode == null ? ObservabilityConstants.Metrics.TAG_VALUE_NONE : errorCode)
                 .register(registry)
                 .increment();
     }
 
     public void sendClassified(String phoneNumberId, MetaErrorClass errorClass) {
-        Counter.builder("broadcast.send.error_class")
-                .tag("phone_number_id", phoneNumberId)
-                .tag("class", errorClass.name())
+        Counter.builder(ObservabilityConstants.Metrics.SEND_ERROR_CLASS)
+                .tag(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, phoneNumberId)
+                .tag(ObservabilityConstants.Metrics.TAG_ERROR_CLASS, errorClass.name())
                 .register(registry)
                 .increment();
     }
 
     public void retryScheduled(String phoneNumberId) {
-        counter("broadcast.send.retry", phoneNumberId).increment();
+        counter(ObservabilityConstants.Metrics.SEND_RETRY, phoneNumberId).increment();
     }
 
     public void duplicateSuppressed(String phoneNumberId) {
-        counter("broadcast.send.duplicate_suppressed", phoneNumberId).increment();
+        counter(ObservabilityConstants.Metrics.SEND_DUPLICATE_SUPPRESSED, phoneNumberId).increment();
     }
 
     public void circuitRejected(String phoneNumberId) {
-        counter("broadcast.circuit.rejected", phoneNumberId).increment();
+        counter(ObservabilityConstants.Metrics.CIRCUIT_REJECTED, phoneNumberId).increment();
     }
 
     // --------------------------------------------------------------- queues
@@ -144,21 +150,21 @@ public class BroadcastMetrics {
     // -------------------------------------------------------------- results
 
     public void resultsPublished(int count) {
-        registry.counter("broadcast.results.published").increment(count);
+        registry.counter(ObservabilityConstants.Metrics.RESULTS_PUBLISHED).increment(count);
     }
 
     public void resultsPublishFailed() {
-        registry.counter("broadcast.results.publish.failures").increment();
+        registry.counter(ObservabilityConstants.Metrics.RESULTS_PUBLISH_FAILURES).increment();
     }
 
     public void batchCompleted(int recipients) {
-        registry.counter("broadcast.batch.completed").increment();
-        registry.counter("broadcast.recipients.processed").increment(recipients);
+        registry.counter(ObservabilityConstants.Metrics.BATCH_COMPLETED).increment();
+        registry.counter(ObservabilityConstants.Metrics.RECIPIENTS_PROCESSED).increment(recipients);
     }
 
     public void deadLettered(String reason) {
-        Counter.builder("broadcast.dead_letter")
-                .tag("reason", reason)
+        Counter.builder(ObservabilityConstants.Metrics.DEAD_LETTER)
+                .tag(ObservabilityConstants.Metrics.TAG_REASON, reason)
                 .register(registry)
                 .increment();
     }
@@ -166,13 +172,17 @@ public class BroadcastMetrics {
     // --------------------------------------------------------------- helpers
 
     private Counter counter(String name, String phoneNumberId) {
-        return Counter.builder(name).tag("phone_number_id", phoneNumberId).register(registry);
+        return Counter.builder(name)
+                .tag(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, phoneNumberId)
+                .register(registry);
     }
 
     private AtomicInteger gauge(Map<String, AtomicInteger> holder, String name, String phoneNumberId) {
         return holder.computeIfAbsent(phoneNumberId, id -> {
             AtomicInteger value = new AtomicInteger();
-            registry.gauge(name, io.micrometer.core.instrument.Tags.of("phone_number_id", id), value);
+            registry.gauge(name,
+                    io.micrometer.core.instrument.Tags.of(ObservabilityConstants.Metrics.TAG_PHONE_NUMBER_ID, id),
+                    value);
             return value;
         });
     }

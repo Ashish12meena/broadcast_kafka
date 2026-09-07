@@ -1,6 +1,9 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.MetaSendPort;
+import com.aigreentick.services.broadcast.common.constants.SimulatorConstants;
 import com.aigreentick.services.broadcast.domain.model.SendResponse;
 import com.aigreentick.services.broadcast.infrastructure.meta.MetaResponseMapper;
 import com.aigreentick.services.broadcast.infrastructure.meta.dto.MetaSendResponse;
@@ -35,7 +38,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * status round trip.
  */
 @Component
-@Profile("test")
+@Profile(InfraConstants.Profile.TEST)
 public class SimulatedMetaClient implements MetaSendPort {
 
     private static final Logger log = LoggerFactory.getLogger(SimulatedMetaClient.class);
@@ -82,11 +85,16 @@ public class SimulatedMetaClient implements MetaSendPort {
         String contact = escape(recipient);
         return """
                 {
-                  "messaging_product": "whatsapp",
+                  "messaging_product": "%s",
                   "contacts": [{"input": "%s", "wa_id": "%s"}],
-                  "messages": [{"id": "%s", "message_status": "accepted"}]
+                  "messages": [{"id": "%s", "message_status": "%s"}]
                 }
-                """.formatted(contact, contact, wamid);
+                """.formatted(
+                DomainConstants.Meta.MESSAGING_PRODUCT_WHATSAPP,
+                contact,
+                contact,
+                wamid,
+                DomainConstants.Meta.STATUS_ACCEPTED);
     }
 
     /**
@@ -100,10 +108,10 @@ public class SimulatedMetaClient implements MetaSendPort {
             return null;
         }
         try {
-            JsonNode to = objectMapper.readTree(requestPayload).get("to");
+            JsonNode to = objectMapper.readTree(requestPayload).get(DomainConstants.Meta.PAYLOAD_FIELD_TO);
             return to == null || to.isNull() ? null : to.asText();
         } catch (Exception e) {
-            log.debug("No readable 'to' in the request payload");
+            log.debug("No readable '{}' in the request payload", DomainConstants.Meta.PAYLOAD_FIELD_TO);
             return null;
         }
     }
@@ -123,10 +131,12 @@ public class SimulatedMetaClient implements MetaSendPort {
             return null;
         }
         try {
-            JsonNode data = objectMapper.readTree(requestPayload).get("biz_opaque_callback_data");
+            JsonNode data = objectMapper.readTree(requestPayload)
+                    .get(DomainConstants.Meta.PAYLOAD_FIELD_CALLBACK_DATA);
             return data == null || data.isNull() ? null : data.asText();
         } catch (Exception e) {
-            log.debug("No readable 'biz_opaque_callback_data' in the request payload");
+            log.debug("No readable '{}' in the request payload",
+                    DomainConstants.Meta.PAYLOAD_FIELD_CALLBACK_DATA);
             return null;
         }
     }
@@ -138,9 +148,10 @@ public class SimulatedMetaClient implements MetaSendPort {
      * an id that cannot be told apart makes a polluted test database impossible to clean up.
      */
     private String generateWamid() {
-        byte[] random = new byte[24];
+        byte[] random = new byte[SimulatorConstants.WAMID_RANDOM_BYTES];
         ThreadLocalRandom.current().nextBytes(random);
-        return "wamid.SIM." + Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+        return SimulatorConstants.SIMULATED_WAMID_PREFIX
+                + Base64.getUrlEncoder().withoutPadding().encodeToString(random);
     }
 
     /**

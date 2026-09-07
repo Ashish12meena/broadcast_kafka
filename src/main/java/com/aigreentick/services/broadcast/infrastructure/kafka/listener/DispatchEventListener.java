@@ -1,8 +1,10 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.listener;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.application.port.in.DispatchBatchUseCase;
 import com.aigreentick.services.broadcast.application.port.out.DeadLetterPort;
-import com.aigreentick.services.broadcast.application.service.ingest.ConsumerFlowController;
 import com.aigreentick.services.broadcast.domain.model.DispatchBatch;
 import com.aigreentick.services.broadcast.domain.model.Recipient;
 import com.aigreentick.services.broadcast.infrastructure.kafka.event.DispatchEvent;
@@ -47,9 +49,9 @@ public class DispatchEventListener {
     }
 
     @KafkaListener(
-            id = ConsumerFlowController.DISPATCH_LISTENER_ID,
-            topics = "${broadcast.topics.outbound-messages}",
-            containerFactory = "dispatchListenerFactory")
+            id = InfraConstants.Kafka.DISPATCH_LISTENER_ID,
+            topics = InfraConstants.ConfigKeys.TOPIC_OUTBOUND_MESSAGES,
+            containerFactory = InfraConstants.Kafka.DISPATCH_LISTENER_FACTORY)
     public void onDispatchEvent(
             @Payload String rawMessage,
             @Header(KafkaHeaders.RECEIVED_KEY) String key,
@@ -57,9 +59,9 @@ public class DispatchEventListener {
             @Header(KafkaHeaders.OFFSET) long offset,
             Acknowledgment acknowledgment) {
 
-        MDC.put("kafkaKey", String.valueOf(key));
-        MDC.put("partition", String.valueOf(partition));
-        MDC.put("offset", String.valueOf(offset));
+        MDC.put(ObservabilityConstants.Logging.MDC_KAFKA_KEY, String.valueOf(key));
+        MDC.put(ObservabilityConstants.Logging.MDC_PARTITION, String.valueOf(partition));
+        MDC.put(ObservabilityConstants.Logging.MDC_OFFSET, String.valueOf(offset));
 
         try {
             DispatchEvent event = objectMapper.readValue(rawMessage, DispatchEvent.class);
@@ -76,7 +78,7 @@ public class DispatchEventListener {
             dispatchBatch.accept(toDomain(event), acknowledgment::acknowledge);
 
         } catch (Exception e) {
-            sendToDeadLetter(rawMessage, "deserialization failed: " + e.getMessage(),
+            sendToDeadLetter(rawMessage, DomainConstants.Messages.DESERIALIZATION_FAILED_PREFIX + e.getMessage(),
                     partition, offset, acknowledgment);
         } finally {
             MDC.clear();
@@ -102,7 +104,8 @@ public class DispatchEventListener {
 
         log.error("Dispatch event rejected, sending to dead letter topic: {}", reason);
         try {
-            deadLetter.send(rawMessage, reason, "outbound-messages", partition, offset);
+            deadLetter.send(rawMessage, reason, InfraConstants.Kafka.SOURCE_TOPIC_OUTBOUND_MESSAGES,
+                    partition, offset);
         } finally {
             // Acknowledged only after the dead letter is safely away, so a broker failure leaves the
             // message on the source topic rather than losing it from both.

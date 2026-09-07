@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.result;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.ResultPublisherPort;
 import com.aigreentick.services.broadcast.application.service.ingest.InFlightBatch;
 import com.aigreentick.services.broadcast.domain.model.BatchResult;
@@ -51,7 +52,7 @@ public class ResultCollector {
             ResultPublisherPort publisher,
             BroadcastProperties properties,
             BroadcastMetrics metrics,
-            @Qualifier("schedulerExecutor") ScheduledExecutorService scheduler) {
+            @Qualifier(InfraConstants.Executor.SCHEDULER_EXECUTOR) ScheduledExecutorService scheduler) {
         this.publisher = publisher;
         this.properties = properties;
         this.metrics = metrics;

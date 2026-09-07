@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.config;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
@@ -37,7 +38,8 @@ public class RedisConfig {
     @SuppressWarnings("unchecked")
     public RedisScript<List> tokenBucketScript() {
         DefaultRedisScript<List> script = new DefaultRedisScript<>();
-        script.setScriptSource(new ResourceScriptSource(new ClassPathResource("redis/token_bucket.lua")));
+        script.setScriptSource(new ResourceScriptSource(
+                new ClassPathResource(InfraConstants.Redis.TOKEN_BUCKET_SCRIPT_PATH)));
         script.setResultType(List.class);
         return script;
     }

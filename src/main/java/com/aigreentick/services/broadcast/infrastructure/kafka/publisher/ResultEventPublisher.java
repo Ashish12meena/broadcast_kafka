@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.publisher;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.ResultPublisherPort;
 import com.aigreentick.services.broadcast.domain.model.BatchResult;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
@@ -32,8 +34,6 @@ import java.util.concurrent.TimeUnit;
 public class ResultEventPublisher implements ResultPublisherPort {
 
     private static final Logger log = LoggerFactory.getLogger(ResultEventPublisher.class);
-
-    private static final long PUBLISH_TIMEOUT_SECONDS = 30;
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -72,19 +72,19 @@ public class ResultEventPublisher implements ResultPublisherPort {
             String payload = objectMapper.writeValueAsString(event);
             kafkaTemplate
                     .send(properties.topics().messageResults(), String.valueOf(result.campaignId()), payload)
-                    .get(PUBLISH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                    .get(InfraConstants.Kafka.RESULT_PUBLISH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
             log.debug("Published {} results campaignId={} phoneNumberId={}",
                     result.outcomes().size(), result.campaignId(), result.phoneNumberId());
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while publishing results", e);
+            throw new IllegalStateException(DomainConstants.Messages.RESULT_PUBLISH_INTERRUPTED, e);
         } catch (Exception e) {
             // Thrown on purpose. The caller must not acknowledge a batch whose outcomes were never
             // recorded anywhere.
             throw new IllegalStateException(
-                    "Could not publish results for campaign " + result.campaignId(), e);
+                    DomainConstants.Messages.RESULT_PUBLISH_FAILED_FORMAT.formatted(result.campaignId()), e);
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.observability;
 
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
 import com.aigreentick.services.broadcast.infrastructure.redis.CapacityMemory;
@@ -39,9 +40,9 @@ public class CapacityHealthIndicator implements HealthIndicator {
                 .count();
 
         return Health.up()
-                .withDetail("knownPhoneNumbers", snapshot.size())
-                .withDetail("degradedPhoneNumbers", degraded)
-                .withDetail("phoneNumbersOnLocalFallback", onFallback)
+                .withDetail(ObservabilityConstants.Metrics.HEALTH_KNOWN_PHONE_NUMBERS, snapshot.size())
+                .withDetail(ObservabilityConstants.Metrics.HEALTH_DEGRADED_PHONE_NUMBERS, degraded)
+                .withDetail(ObservabilityConstants.Metrics.HEALTH_PHONE_NUMBERS_ON_LOCAL_FALLBACK, onFallback)
                 .build();
     }
 }

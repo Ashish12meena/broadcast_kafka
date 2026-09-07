@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.dispatch;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.service.ingest.InFlightBatch;
 import com.aigreentick.services.broadcast.application.service.ingest.PendingSend;
 import com.aigreentick.services.broadcast.application.service.ingest.PhoneNumberQueue;
@@ -46,7 +47,7 @@ public class DispatchScheduler {
     private final BroadcastMetrics metrics;
 
     public DispatchScheduler(
-            @Qualifier("dispatchExecutor") ExecutorService dispatchExecutor,
+            @Qualifier(InfraConstants.Executor.DISPATCH_EXECUTOR) ExecutorService dispatchExecutor,
             DispatchWorkerFactory workerFactory,
             BroadcastMetrics metrics) {
         this.dispatchExecutor = dispatchExecutor;
@@ -137,7 +138,7 @@ public class DispatchScheduler {
     }
 
     /** Publishes queue depth and drops queues for numbers that have gone quiet. */
-    @Scheduled(fixedDelayString = "${broadcast.dispatch.housekeeping-interval:PT60S}")
+    @Scheduled(fixedDelayString = InfraConstants.ConfigKeys.DISPATCH_HOUSEKEEPING_INTERVAL)
     public void housekeeping() {
         metrics.queueState(totalPendingRecipients(), activeNumbers());
 

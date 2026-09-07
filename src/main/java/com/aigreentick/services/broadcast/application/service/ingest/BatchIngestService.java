@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.ingest;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.application.port.in.DispatchBatchUseCase;
 import com.aigreentick.services.broadcast.application.service.dispatch.DispatchScheduler;
 import com.aigreentick.services.broadcast.domain.model.DispatchBatch;
@@ -39,7 +40,7 @@ public class BatchIngestService implements DispatchBatchUseCase {
 
     @Override
     public void accept(DispatchBatch batch, Runnable onComplete) {
-        if (batch.size() == 0) {
+        if (batch.size() == DomainConstants.Dispatch.EMPTY_BATCH_SIZE) {
             // Nothing to send, but the offset still has to move or the partition stalls here forever.
             log.warn("Empty batch campaignId={} phoneNumberId={}; acknowledging",
                     batch.campaignId(), batch.phoneNumberId());
@@ -56,7 +57,7 @@ public class BatchIngestService implements DispatchBatchUseCase {
         int deepest = scheduler.deepestQueue();
         if (deepest >= properties.dispatch().maxQueuedBatchesPerNumber()) {
             flowController.pauseIfRunning(
-                    "queue depth %d reached the limit of %d"
+                    DomainConstants.Messages.QUEUE_DEPTH_LIMIT_REACHED_FORMAT
                             .formatted(deepest, properties.dispatch().maxQueuedBatchesPerNumber()));
         }
     }

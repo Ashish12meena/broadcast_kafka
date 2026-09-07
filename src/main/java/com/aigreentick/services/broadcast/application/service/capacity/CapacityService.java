@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.capacity;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.application.port.in.UpdateCapacityUseCase;
 import com.aigreentick.services.broadcast.application.port.out.CapacityStorePort;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
@@ -66,7 +67,7 @@ public class CapacityService implements UpdateCapacityUseCase {
         int defaultMps = properties.rateLimit().defaultMps();
         log.debug("Using default capacity for phoneNumberId={} mps={}", phoneNumberId, defaultMps);
         return new PhoneNumberCapacity(
-                phoneNumberId, defaultMps, defaultMps, "UNKNOWN", 0,
+                phoneNumberId, defaultMps, defaultMps, DomainConstants.Meta.TIER_UNKNOWN, 0,
                 System.currentTimeMillis(), CapacitySource.DEFAULT);
     }
 }

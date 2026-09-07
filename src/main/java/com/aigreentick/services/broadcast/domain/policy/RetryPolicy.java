@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.domain.policy;
 
+
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -36,7 +38,8 @@ public final class RetryPolicy {
 
     /** Full-jitter delay: a uniform draw from {@code [0, min(max, base * 2^attempt))}. */
     public Duration delayFor(int attemptsSoFar) {
-        long exponential = base.toMillis() << Math.min(attemptsSoFar, 16);
+        long exponential =
+                base.toMillis() << Math.min(attemptsSoFar, DomainConstants.Dispatch.MAX_BACKOFF_SHIFT);
         long ceiling = Math.min(exponential, max.toMillis());
         long jittered = ceiling <= 0 ? 0 : ThreadLocalRandom.current().nextLong(ceiling);
         return Duration.ofMillis(jittered);

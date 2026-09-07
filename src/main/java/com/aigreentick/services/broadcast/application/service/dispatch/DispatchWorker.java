@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.dispatch;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.application.port.out.RateLimiterPort;
 import com.aigreentick.services.broadcast.application.service.ingest.ConsumerFlowController;
 import com.aigreentick.services.broadcast.application.service.ingest.PendingSend;
@@ -118,7 +119,8 @@ public final class DispatchWorker implements Runnable {
     }
 
     private void sleepFor(long waitMicros, String phoneNumberId) {
-        long millis = Math.max(1, waitMicros / 1_000);
+        long millis = Math.max(
+                DomainConstants.Dispatch.MIN_SLEEP_MILLIS, waitMicros / DomainConstants.Dispatch.MICROS_PER_MILLI);
         long capped = Math.min(millis, properties.dispatch().maxSleep().toMillis());
         metrics.rateLimitWait(phoneNumberId, Duration.ofMillis(capped));
         try {
@@ -133,7 +135,7 @@ public final class DispatchWorker implements Runnable {
             return;
         }
         if (scheduler.deepestQueue() <= properties.dispatch().queueResumeThreshold()) {
-            flowController.resumeIfPaused("queues drained below the resume threshold");
+            flowController.resumeIfPaused(DomainConstants.Messages.QUEUES_DRAINED);
         }
     }
 }

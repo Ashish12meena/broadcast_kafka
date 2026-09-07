@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.redis;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.RateLimiterPort;
 import com.aigreentick.services.broadcast.domain.model.RateGrant;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
@@ -30,11 +32,6 @@ import java.util.List;
 public class RedisRateLimiter implements RateLimiterPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisRateLimiter.class);
-
-    /** The script's signal that no capacity has been published for a number. */
-    private static final long CAPACITY_UNKNOWN = -1L;
-
-    private static final long BUCKET_TTL_SECONDS = 3_600;
 
     private final StringRedisTemplate redis;
     private final RedisScript<List> tokenBucketScript;
@@ -67,21 +64,21 @@ public class RedisRateLimiter implements RateLimiterPort {
             List<Long> result = redis.execute(
                     tokenBucketScript,
                     List.of(RedisKeys.tokenBucket(phoneNumberId), RedisKeys.capacity(phoneNumberId)),
-                    String.valueOf(System.currentTimeMillis() * 1_000L),
+                    String.valueOf(System.currentTimeMillis() * DomainConstants.Dispatch.MICROS_PER_MILLI),
                     String.valueOf(requested),
                     String.valueOf(properties.rateLimit().burstSeconds()),
-                    String.valueOf(BUCKET_TTL_SECONDS));
+                    String.valueOf(InfraConstants.Redis.TOKEN_BUCKET_TTL_SECONDS));
 
-            if (result == null || result.size() < 2) {
+            if (result == null || result.size() < InfraConstants.Redis.TOKEN_BUCKET_RESULT_SIZE) {
                 log.warn("Token bucket returned no result phoneNumberId={}; using local fallback",
                         phoneNumberId);
                 return fallbackGrant(phoneNumberId, requested);
             }
 
-            long granted = result.get(0);
-            long waitMicros = result.get(1);
+            long granted = result.get(InfraConstants.Redis.TOKEN_BUCKET_RESULT_GRANTED_INDEX);
+            long waitMicros = result.get(InfraConstants.Redis.TOKEN_BUCKET_RESULT_WAIT_INDEX);
 
-            if (granted == CAPACITY_UNKNOWN) {
+            if (granted == InfraConstants.Redis.CAPACITY_UNKNOWN) {
                 // Redis is healthy but the Messaging Service has never published capacity for this
                 // number. Worth a warning: it means a batch is being dispatched from a number the
                 // control plane does not know about.

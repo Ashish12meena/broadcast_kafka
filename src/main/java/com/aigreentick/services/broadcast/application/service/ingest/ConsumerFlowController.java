@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.application.service.ingest;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,9 +26,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ConsumerFlowController {
 
     private static final Logger log = LoggerFactory.getLogger(ConsumerFlowController.class);
-
-    /** Must match the listener id on the dispatch consumer. */
-    public static final String DISPATCH_LISTENER_ID = "broadcast-dispatch-listener";
 
     private final KafkaListenerEndpointRegistry registry;
     private final BroadcastMetrics metrics;
@@ -67,6 +65,6 @@ public class ConsumerFlowController {
     }
 
     private MessageListenerContainer dispatchContainer() {
-        return registry.getListenerContainer(DISPATCH_LISTENER_ID);
+        return registry.getListenerContainer(InfraConstants.Kafka.DISPATCH_LISTENER_ID);
     }
 }

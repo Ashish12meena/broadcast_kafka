@@ -1,5 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.SimulatorConstants;
 import io.netty.channel.ChannelOption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,15 +16,13 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 
-import java.time.Duration;
-
 /**
  * Wires the simulator. Every bean here is confined to the test profile, so there is one place to
  * look when answering "can this deployment reach Meta?" — the answer is the profile, and nothing
  * else.
  */
 @Configuration
-@Profile("test")
+@Profile(InfraConstants.Profile.TEST)
 @EnableConfigurationProperties(MetaSimulatorProperties.class)
 public class MetaSimulatorConfig {
 
@@ -44,7 +44,7 @@ public class MetaSimulatorConfig {
      * holds its connection indefinitely, so a receiver that hangs rather than refuses wedges the
      * pool permanently instead of briefly.
      */
-    @Bean("simulatorCallbackWebClient")
+    @Bean(SimulatorConstants.CALLBACK_WEB_CLIENT)
     public WebClient simulatorCallbackWebClient(MetaSimulatorProperties properties) {
         if (properties.callbacksEnabled()) {
             log.info("Simulated delivery statuses will be posted to {} after a random delay of "
@@ -55,17 +55,19 @@ public class MetaSimulatorConfig {
                     properties.maxInFlight(),
                     properties.maxConnections());
         } else {
-            log.warn("broadcast.simulator.callback-url is not set. Sends will be simulated, but no "
-                    + "delivery statuses will be posted.");
+            log.warn("{} is not set. Sends will be simulated, but no delivery statuses will be "
+                    + "posted.", InfraConstants.ConfigKeys.SIMULATOR_CALLBACK_URL_KEY);
         }
 
-        ConnectionProvider connectionProvider = ConnectionProvider.builder("simulator-callback")
+        ConnectionProvider connectionProvider =
+                ConnectionProvider.builder(SimulatorConstants.CALLBACK_POOL_NAME)
                 .maxConnections(properties.maxConnections())
                 // Generous relative to maxInFlight, which is the real limit. This only needs to be
                 // large enough that a brief burst queues instead of being rejected.
-                .pendingAcquireMaxCount(properties.maxConnections() * 20)
-                .pendingAcquireTimeout(Duration.ofSeconds(10))
-                .maxIdleTime(Duration.ofSeconds(30))
+                .pendingAcquireMaxCount(
+                        properties.maxConnections() * SimulatorConstants.PENDING_ACQUIRE_MULTIPLIER)
+                .pendingAcquireTimeout(SimulatorConstants.PENDING_ACQUIRE_TIMEOUT)
+                .maxIdleTime(SimulatorConstants.MAX_IDLE_TIME)
                 .build();
 
         HttpClient httpClient = HttpClient.create(connectionProvider)

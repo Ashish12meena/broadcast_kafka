@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.meta;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
 import com.aigreentick.services.broadcast.domain.model.SendResponse;
 import com.aigreentick.services.broadcast.infrastructure.meta.dto.MetaSendResponse;
 
@@ -25,7 +26,7 @@ public final class MetaResponseMapper {
      */
     public static SendResponse toSendResponse(MetaSendResponse response) {
         if (response == null) {
-            return SendResponse.rejected(null, "Empty response from Meta");
+            return SendResponse.rejected(null, DomainConstants.Messages.EMPTY_META_RESPONSE);
         }
         if (response.accepted()) {
             return SendResponse.accepted(response.providerMessageId(), response.messageStatus());
@@ -33,7 +34,7 @@ public final class MetaResponseMapper {
 
         MetaSendResponse.MetaError error = response.error();
         if (error == null) {
-            return SendResponse.rejected(null, "Meta returned neither a message nor an error");
+            return SendResponse.rejected(null, DomainConstants.Messages.META_RETURNED_NOTHING_USABLE);
         }
         return SendResponse.rejected(error.code(), error.message());
     }

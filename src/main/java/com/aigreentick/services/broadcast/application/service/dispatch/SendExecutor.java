@@ -1,5 +1,8 @@
 package com.aigreentick.services.broadcast.application.service.dispatch;
 
+import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.application.port.out.IdempotencyPort;
 import com.aigreentick.services.broadcast.application.port.out.MetaSendPort;
 import com.aigreentick.services.broadcast.application.service.capacity.CapacityDegrader;
@@ -54,6 +57,12 @@ public class SendExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(SendExecutor.class);
 
+    /**
+     * Prefix for the per-phone-number circuit breaker name. One breaker per number, because Meta
+     * being unreachable for one number says nothing about the others.
+     */
+    private static final String CIRCUIT_BREAKER_NAME_PREFIX = "meta-";
+
     private final MetaSendPort metaSend;
     private final IdempotencyPort idempotency;
     private final ResultCollector resultCollector;
@@ -76,8 +85,9 @@ public class SendExecutor {
             CircuitBreakerRegistry circuitBreakers,
             BroadcastMetrics metrics,
             BroadcastProperties properties,
-            @Qualifier("dispatchExecutor") ExecutorService dispatchExecutor,
-            @Qualifier("schedulerExecutor") ScheduledExecutorService scheduledExecutor) {
+            @Qualifier(InfraConstants.Executor.DISPATCH_EXECUTOR) ExecutorService dispatchExecutor,
+            @Qualifier(InfraConstants.Executor.SCHEDULER_EXECUTOR)
+            ScheduledExecutorService scheduledExecutor) {
         this.metaSend = metaSend;
         this.idempotency = idempotency;
         this.resultCollector = resultCollector;
@@ -104,9 +114,9 @@ public class SendExecutor {
         Recipient recipient = send.recipient();
         String phoneNumberId = send.phoneNumberId();
 
-        MDC.put("campaignId", String.valueOf(send.batch().campaignId()));
-        MDC.put("phoneNumberId", phoneNumberId);
-        MDC.put("recipientId", String.valueOf(recipient.recipientId()));
+        MDC.put(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, String.valueOf(send.batch().campaignId()));
+        MDC.put(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, phoneNumberId);
+        MDC.put(ObservabilityConstants.Logging.MDC_RECIPIENT_ID, String.valueOf(recipient.recipientId()));
 
         boolean permitHeld = false;
         try {
@@ -134,7 +144,7 @@ public class SendExecutor {
                 log.info("Duplicate suppressed; recipient was already dispatched wamid={}",
                         priorMessageId);
                 resolve(send, RecipientOutcome.accepted(
-                        recipient, priorMessageId, "accepted", send.attempts()));
+                        recipient, priorMessageId, DomainConstants.Meta.STATUS_ACCEPTED, send.attempts()));
                 return;
             }
 
@@ -145,11 +155,12 @@ public class SendExecutor {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             resolve(send, RecipientOutcome.failed(
-                    recipient, "INTERRUPTED", "Send interrupted during shutdown", true, send.attempts()));
+                    recipient, DomainConstants.ErrorCodes.INTERRUPTED, DomainConstants.Messages.SEND_INTERRUPTED, true,
+                    send.attempts()));
         } catch (RuntimeException e) {
             log.error("Unexpected failure while sending", e);
             resolve(send, RecipientOutcome.failed(
-                    recipient, "INTERNAL_ERROR", e.getMessage(), true, send.attempts()));
+                    recipient, DomainConstants.ErrorCodes.INTERNAL_ERROR, e.getMessage(), true, send.attempts()));
         } finally {
             if (permitHeld) {
                 inFlightPermits.release();
@@ -160,11 +171,12 @@ public class SendExecutor {
 
     private SendResponse callMeta(PendingSend send) {
         String phoneNumberId = send.phoneNumberId();
-        CircuitBreaker breaker = circuitBreakers.circuitBreaker("meta-" + phoneNumberId);
+        CircuitBreaker breaker = circuitBreakers.circuitBreaker(
+                CIRCUIT_BREAKER_NAME_PREFIX + phoneNumberId);
 
         if (!breaker.tryAcquirePermission()) {
             metrics.circuitRejected(phoneNumberId);
-            return SendResponse.unreachable("Circuit open for this phone number");
+            return SendResponse.unreachable(DomainConstants.Messages.CIRCUIT_OPEN);
         }
 
         long startNanos = System.nanoTime();
@@ -213,7 +225,7 @@ public class SendExecutor {
                 : MetaErrorCatalog.classify(response.errorCode());
 
         String errorCode = response.errorCode() == null
-                ? (response.transportFailure() ? "TRANSPORT" : "UNKNOWN")
+                ? (response.transportFailure() ? DomainConstants.ErrorCodes.TRANSPORT : DomainConstants.ErrorCodes.UNKNOWN)
                 : String.valueOf(response.errorCode());
 
         metrics.sendResult(phoneNumberId, false, errorCode);
