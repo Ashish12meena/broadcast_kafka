@@ -32,9 +32,22 @@ broadcast:
 
     # Random gap before each status, drawn independently and applied cumulatively: `delivered` lands
     # after two draws and `read` after three. Randomising is the point — statuses arriving in send
-    # order never exercise the receiver's out-of-order handling.
-    min-delay: ${SIM_CALLBACK_MIN_DELAY:1s}
-    max-delay: ${SIM_CALLBACK_MAX_DELAY:8s}
+    # order never exercise the receiver's out-of-order handling. The magnitude is not the point, so
+    # these are short: 1s-8s meant a single message took up to 24 seconds to finish its progression,
+    # which is far slower than a real account and slows every manual test for no benefit.
+    min-delay: ${SIM_CALLBACK_MIN_DELAY:200ms}
+    max-delay: ${SIM_CALLBACK_MAX_DELAY:2s}
+
+    # How many callbacks may be POSTING at once, and the pool behind them. Raise these together —
+    # in-flight above the pool is rejected by pending-acquire, not queued, and the properties record
+    # refuses to start on that combination.
+    #
+    # A waiting callback does not consume a slot; the delay is applied in an earlier unbounded stage
+    # of the pipeline. That was not always true, and while it was, the simulator drained roughly
+    # max-in-flight / mean-delay callbacks per second — about 3.5 — while a standard-tier broadcast
+    # at 80 mps produced 240. The sink buffer filled in seconds and the rest were silently dropped.
+    max-in-flight: ${SIM_CALLBACK_MAX_IN_FLIGHT:128}
+    max-connections: ${SIM_CALLBACK_MAX_CONNECTIONS:128}
 
     # Nothing about the sending account is configured here. phoneNumberId and wabaAccountId both come
     # from the DispatchEvent that produced the send.

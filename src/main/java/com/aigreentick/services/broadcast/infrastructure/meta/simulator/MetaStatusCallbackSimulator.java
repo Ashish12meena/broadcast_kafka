@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
@@ -33,14 +34,34 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>{@code phoneNumberId} and {@code wabaAccountId} both come from the {@code DispatchEvent} that
  * produced the send, so nothing about the sending account is configured.
  *
- * <h2>Backpressure</h2>
- * Callbacks are emitted into a sink and posted through a {@code flatMap} bounded by
- * {@code broadcast.simulator.max-in-flight}, rather than each subscribing independently. Subscribing
- * per status put no ceiling on concurrency: a broadcast of five hundred recipients created fifteen
- * hundred simultaneous requests, which exhausted the connection pool and overflowed Reactor Netty's
- * pending-acquire queue. Every request past the overflow was rejected before it was sent, so the
- * statuses were not delayed — they were silently lost. Bounding concurrency here means a burst
- * queues in a place that can be measured, and the pool is never asked for more than it has.
+ * <h2>Backpressure, and why waiting is separated from posting</h2>
+ * Callbacks are emitted into a sink and drained by a two-stage pipeline: an unbounded stage that
+ * does nothing but wait out each callback's delay, then a stage bounded by
+ * {@code broadcast.simulator.max-in-flight} that actually posts. Both stages are needed and they
+ * bound different things.
+ *
+ * <p>The bound exists because subscribing per status put no ceiling on concurrency at all: a
+ * broadcast of five hundred recipients created fifteen hundred simultaneous requests, which
+ * exhausted the connection pool and overflowed Reactor Netty's pending-acquire queue. Every request
+ * past the overflow was rejected before it was sent, so those statuses were not delayed — they were
+ * silently lost.
+ *
+ * <p>The separation exists because the delay used to sit inside the bounded stage, which made the
+ * bound mean something entirely different from what it says. A callback held one of the
+ * {@code max-in-flight} slots for its whole wait, not just for its HTTP call. At the default 32
+ * slots and a mean cumulative wait of about nine seconds, the pipeline drained roughly three and a
+ * half callbacks per second — for the entire service. A broadcast at Meta's standard 80 messages per
+ * second produces two hundred and forty. The sink's 4096-entry buffer filled in under twenty
+ * seconds and everything after it was dropped, which presented as "the simulator posts hardly any
+ * webhooks" rather than as an error.
+ *
+ * <p>Waiting is now unbounded because a pending delay costs a timer entry and nothing else — no
+ * thread, no connection. Only the posts are bounded, which is the resource that is actually scarce.
+ * Throughput is now limited by how fast the receiver answers rather than by how long a simulated
+ * network takes to pretend to deliver a message.
+ *
+ * <p>Keep {@code max-connections} at or above {@code max-in-flight}. They are separate settings and
+ * both default to 32; raising in-flight alone puts the pending-acquire overflow back.
  *
  * <p>Fire and forget: a dropped simulated webhook is a missing test status, not lost customer data,
  * so there is no retry and no durability. Statuses still pending when the context closes are
@@ -69,7 +90,14 @@ public class MetaStatusCallbackSimulator {
     /** Counted rather than logged per occurrence: under overflow this would be the loudest line. */
     private final AtomicLong dropped = new AtomicLong();
 
+    /** How often {@link #reportDrops()} summarises. Frequent enough to notice mid-broadcast. */
+    private static final Duration DROP_REPORT_INTERVAL = Duration.ofSeconds(10);
+
     private Disposable subscription;
+    private Disposable reporter;
+
+    /** Read and written only from the reporter's single subscriber thread, so a plain long is fine. */
+    private long lastReported;
 
     public MetaStatusCallbackSimulator(
             @Qualifier("simulatorCallbackWebClient") WebClient callbackWebClient,
@@ -81,12 +109,25 @@ public class MetaStatusCallbackSimulator {
     @PostConstruct
     void start() {
         subscription = pending.asFlux()
+                // Stage one: wait out the delay. Deliberately unbounded — a pending timer holds no
+                // thread and no connection, so there is nothing here worth rationing. This is the
+                // stage that must NOT share a budget with the posts; see the class javadoc.
+                .flatMap(callback -> Mono.delay(callback.delay()).thenReturn(callback),
+                        Integer.MAX_VALUE)
+                // Stage two: post. Bounded, because connections are finite and the receiver is not
+                // ours to overwhelm.
                 .flatMap(this::post, properties.maxInFlight())
                 .subscribe();
+
+        reporter = Flux.interval(DROP_REPORT_INTERVAL, DROP_REPORT_INTERVAL)
+                .subscribe(tick -> reportDrops());
     }
 
     @PreDestroy
     void stop() {
+        if (reporter != null) {
+            reporter.dispose();
+        }
         if (subscription != null) {
             subscription.dispose();
         }
@@ -94,6 +135,27 @@ public class MetaStatusCallbackSimulator {
         if (lost > 0) {
             log.warn("{} simulated status callbacks were dropped by backpressure this run", lost);
         }
+    }
+
+    /**
+     * Reports drops periodically while the process runs, not only at shutdown.
+     *
+     * <p>Reporting only at shutdown is how a saturated simulator reads as a slow one. Someone
+     * watching a broadcast sees a trickle of webhooks, no error, and no reason to suspect that most
+     * of them were discarded — the number that would have told them arrives after they have stopped
+     * looking. Logged only when the count has moved since the last tick, so an idle or healthy run
+     * stays silent.
+     */
+    private void reportDrops() {
+        long total = dropped.get();
+        long since = total - lastReported;
+        if (since <= 0) {
+            return;
+        }
+        lastReported = total;
+        log.warn("{} simulated status callbacks dropped by backpressure in the last {}s ({} total). "
+                        + "Raise broadcast.simulator.max-in-flight and max-connections together.",
+                since, DROP_REPORT_INTERVAL.toSeconds(), total);
     }
 
     /**
@@ -181,10 +243,10 @@ public class MetaStatusCallbackSimulator {
                             callback.wamid(), callback.status(), callback.delay().toMillis()))
                     .then();
         })
-        // delaySubscription, not a scheduled task: the wait costs a timer entry rather than a
-        // thread. Using the shared schedulerExecutor would put slow HTTP calls on the two platform
-        // threads that also run retry re-queues and result flushes.
-        .delaySubscription(callback.delay())
+        // No delay here. The wait happens in the pipeline's first stage, before this Mono is ever
+        // subscribed, so a callback that is merely waiting does not hold one of the max-in-flight
+        // slots. It used to, and that single line was the reason a broadcast produced a handful of
+        // webhooks instead of hundreds — see the class javadoc for the arithmetic.
         // Kept inside flatMap so one failure never cancels the shared subscription. Without this,
         // a single rejected callback would terminate the pipeline and silently stop every
         // subsequent status for the lifetime of the process.

@@ -20,10 +20,16 @@ import java.util.Map;
  * @param maxDelay        upper bound of that gap
  * @param maxConnections  size of the simulator's own connection pool. Separate from
  *                        {@code broadcast.meta.max-connections} so a slow callback receiver cannot
- *                        starve the send path
- * @param maxInFlight     how many callbacks may be posting at once. This is the real backpressure
- *                        control: without it, a large broadcast queues three requests per recipient
- *                        against a pool of tens, and the overflow is rejected rather than delayed
+ *                        starve the send path. Keep it at or above {@code maxInFlight} — raising
+ *                        in-flight past the pool just moves the failure into Reactor Netty's
+ *                        pending-acquire queue, where it surfaces as rejected requests rather than
+ *                        as waiting ones
+ * @param maxInFlight     how many callbacks may be POSTING at once. Counts requests only: a callback
+ *                        waiting out its delay does not occupy a slot, because the wait happens in
+ *                        an earlier, unbounded stage of the pipeline. It did once, which capped the
+ *                        whole simulator at roughly {@code maxInFlight / meanDelaySeconds} callbacks
+ *                        per second — about three and a half at the old defaults, against the two
+ *                        hundred and forty a standard-tier broadcast produces
  * @param responseTimeout how long to wait for the receiver before abandoning a callback. The
  *                        important one — an untimed request holds its connection forever, so a
  *                        hung receiver wedges the pool permanently instead of briefly
@@ -43,11 +49,19 @@ public record MetaSimulatorProperties(
     public MetaSimulatorProperties {
         callbackUrl = callbackUrl == null ? "" : callbackUrl.trim();
         headers = headers == null ? Map.of() : Map.copyOf(headers);
-        minDelay = minDelay == null ? Duration.ofSeconds(1) : minDelay;
-        maxDelay = maxDelay == null ? Duration.ofSeconds(8) : maxDelay;
+        // Short by default. The randomness is the point — it makes messages overtake each other
+        // and exercises the receiver's out-of-order handling — but the magnitude buys nothing
+        // except waiting. Seconds-long defaults made a broadcast take minutes to produce statuses
+        // that a real Meta account returns in well under one.
+        minDelay = minDelay == null ? Duration.ofMillis(200) : minDelay;
+        maxDelay = maxDelay == null ? Duration.ofSeconds(2) : maxDelay;
 
-        maxConnections = maxConnections == null ? 32 : maxConnections;
-        maxInFlight = maxInFlight == null ? 32 : maxInFlight;
+        // Both raised from 32, and raised together. 128 concurrent posts against a receiver
+        // answering in tens of milliseconds clears the ~240 callbacks per second that Meta's
+        // standard 80 mps tier implies, with headroom for the 1000 mps tier's bursts to queue
+        // in the sink rather than be dropped.
+        maxConnections = maxConnections == null ? 128 : maxConnections;
+        maxInFlight = maxInFlight == null ? 128 : maxInFlight;
         responseTimeout = responseTimeout == null ? Duration.ofSeconds(10) : responseTimeout;
         connectTimeout = connectTimeout == null ? Duration.ofSeconds(3) : connectTimeout;
 
@@ -62,6 +76,15 @@ public record MetaSimulatorProperties(
         if (maxInFlight < 1) {
             throw new IllegalArgumentException(
                     "broadcast.simulator.max-in-flight must be >= 1");
+        }
+        if (maxInFlight > maxConnections) {
+            // Rejected rather than clamped. This configuration does not fail loudly at runtime — it
+            // overflows the pending-acquire queue and drops callbacks, which reads as a slow
+            // simulator rather than a misconfigured one. Better to refuse to start.
+            throw new IllegalArgumentException(
+                    "broadcast.simulator.max-in-flight (%d) must not exceed max-connections (%d); "
+                            .formatted(maxInFlight, maxConnections)
+                            + "the excess would be rejected by the connection pool, not queued");
         }
     }
 
