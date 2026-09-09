@@ -150,10 +150,10 @@ management:
 
 logging:
   level:
-    com.aigreentick.services.broadcast: INFO
-    org.apache.kafka: WARN
+    com.aigreentick.services.broadcast: OFF
+    org.apache.kafka: OFF
 
     # The Redis classes fall back to local behaviour rather than failing, and now report that as a
     # transition plus a counter rather than per call. Kept at INFO so the recovery line is visible;
     # raise to DEBUG through /actuator/loggers when investigating a specific fallback.
-    com.aigreentick.services.broadcast.infrastructure.redis: INFO
+    com.aigreentick.services.broadcast.infrastructure.redis: OFF
