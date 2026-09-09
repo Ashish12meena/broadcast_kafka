@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.listener;
 
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.util.LogSafe;
 import com.aigreentick.services.broadcast.application.port.in.UpdateCapacityUseCase;
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
@@ -46,7 +47,11 @@ public class CapacityEventListener {
 
             CapacityEvent event = objectMapper.readValue(rawMessage, CapacityEvent.class);
             if (!event.isUsable()) {
-                log.warn("Ignoring capacity event with no usable rate: {}", rawMessage);
+                // Truncated: a capacity event should be small, but this path is reached precisely
+                // when the producer sent something unexpected, and an unbounded field on a topic
+                // this service does not control is not a field to log whole.
+                log.warn("Ignoring capacity event with no usable rate phoneNumberId={} payload={}",
+                        event.phoneNumberId(), LogSafe.truncate(rawMessage));
                 return;
             }
 

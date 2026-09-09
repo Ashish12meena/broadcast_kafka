@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.application.service.result;
 
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
 import com.aigreentick.services.broadcast.application.port.out.ResultPublisherPort;
 import com.aigreentick.services.broadcast.application.service.ingest.InFlightBatch;
 import com.aigreentick.services.broadcast.domain.model.BatchResult;
@@ -11,6 +12,9 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+
+import static net.logstash.logback.argument.StructuredArguments.kv;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -90,8 +94,14 @@ public class ResultCollector {
         flush(new ResultKey(batch.campaignId(), batch.phoneNumberId()));
 
         metrics.batchCompleted(batch.batch().size());
-        log.info("Batch complete campaignId={} phoneNumberId={} recipients={} durationMs={}",
-                batch.campaignId(), batch.phoneNumberId(), batch.batch().size(), batch.ageMs());
+        // kv() rather than interpolation: these become first-class JSON fields, so "durationMs > 5000"
+        // is a query instead of a regex over the message text. Same cost, same rendering in the dev
+        // console pattern.
+        log.info("Batch complete",
+                kv(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, batch.campaignId()),
+                kv(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, batch.phoneNumberId()),
+                kv("recipients", batch.batch().size()),
+                kv("durationMs", batch.ageMs()));
 
         batch.complete();
     }
@@ -130,8 +140,21 @@ public class ResultCollector {
             metrics.resultsPublished(outcomes.size());
         } catch (RuntimeException e) {
             metrics.resultsPublishFailed();
-            log.error("Could not publish {} results campaignId={} phoneNumberId={}",
-                    outcomes.size(), key.campaignId(), key.phoneNumberId(), e);
+            // publish() is reached from the scheduled flush as well as the dispatch path, and the
+            // scheduler thread carries no MDC — without this the most important error in this class
+            // arrives with no campaign context at all.
+            MDC.put(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, String.valueOf(key.campaignId()));
+            MDC.put(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, key.phoneNumberId());
+            try {
+                log.error("Could not publish results",
+                        kv("outcomes", outcomes.size()),
+                        kv(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, key.campaignId()),
+                        kv(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, key.phoneNumberId()),
+                        e);
+            } finally {
+                MDC.remove(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID);
+                MDC.remove(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID);
+            }
             throw e;
         }
     }

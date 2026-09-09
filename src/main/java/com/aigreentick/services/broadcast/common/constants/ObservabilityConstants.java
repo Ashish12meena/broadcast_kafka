@@ -65,6 +65,18 @@ public final class ObservabilityConstants {
         public static final String CAPACITY_SOURCE = "broadcast.capacity.source";
         public static final String CAPACITY_DEGRADED = "broadcast.capacity.degraded";
 
+        /**
+         * Rate of rate-limiter calls served by the local fallback because Redis was unreachable.
+         *
+         * <p>This carries the information that used to be a per-call WARN. The log now says only
+         * that a degradation began and ended; this says how much traffic it covered, which is the
+         * part worth alerting on.
+         */
+        public static final String RATE_LIMITER_DEGRADED = "broadcast.ratelimiter.degraded";
+
+        /** Dispatch attempted from a number the control plane has never published capacity for. */
+        public static final String CAPACITY_UNKNOWN = "broadcast.capacity.unknown";
+
         // --------------------------------------------------------------------- send
 
         public static final String SEND_DURATION = "broadcast.send.duration";

@@ -6,8 +6,11 @@ import com.aigreentick.services.broadcast.application.port.out.CapacityStorePort
 import com.aigreentick.services.broadcast.domain.model.CapacitySource;
 import com.aigreentick.services.broadcast.domain.model.PhoneNumberCapacity;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
+import com.aigreentick.services.broadcast.infrastructure.observability.RedisDegradationTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static net.logstash.logback.argument.StructuredArguments.kv;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -36,6 +39,11 @@ public class RedisCapacityStore implements CapacityStorePort {
     private final CapacityMemory memory;
     private final BroadcastProperties properties;
 
+    // find() is on the dispatch path and read far more often than the value changes, so a
+    // per-failure log line here repeats at dispatch frequency during an outage.
+    private final RedisDegradationTracker degradation =
+            new RedisDegradationTracker(log, "the capacity store");
+
     public RedisCapacityStore(
             StringRedisTemplate redis, CapacityMemory memory, BroadcastProperties properties) {
         this.redis = redis;
@@ -62,12 +70,13 @@ public class RedisCapacityStore implements CapacityStorePort {
                     sourceValue(hash.get(InfraConstants.Redis.FIELD_SOURCE)));
 
             memory.remember(capacity);
+            degradation.exit();
             return Optional.of(capacity);
 
         } catch (DataAccessException e) {
             // The caller decides what to do without capacity; returning empty rather than throwing
             // keeps the dispatch loop free of Redis-specific error handling.
-            log.warn("Could not read capacity phoneNumberId={} reason={}", phoneNumberId, e.toString());
+            degradation.enter(e.toString() + "; serving last known capacity");
             return memory.lastKnown(phoneNumberId)
                     .map(known -> known.withSource(CapacitySource.LOCAL_FALLBACK));
         }
@@ -87,9 +96,12 @@ public class RedisCapacityStore implements CapacityStorePort {
                     InfraConstants.Redis.FIELD_SOURCE, capacity.source().name()));
             redis.expire(key, InfraConstants.Redis.CAPACITY_TTL);
 
-            log.info("Capacity applied phoneNumberId={} effectiveMps={} configuredMps={} tier={} source={}",
-                    capacity.phoneNumberId(), capacity.effectiveMps(), capacity.configuredMps(),
-                    capacity.tier(), capacity.source());
+            log.info("Capacity applied",
+                    kv("phoneNumberId", capacity.phoneNumberId()),
+                    kv("effectiveMps", capacity.effectiveMps()),
+                    kv("configuredMps", capacity.configuredMps()),
+                    kv("tier", capacity.tier()),
+                    kv("source", capacity.source()));
 
         } catch (DataAccessException e) {
             log.error("Could not write capacity phoneNumberId={} reason={}",
@@ -129,6 +141,11 @@ public class RedisCapacityStore implements CapacityStorePort {
             log.warn("Could not acquire degrade lock phoneNumberId={} reason={}", phoneNumberId, e.toString());
             return false;
         }
+    }
+
+    /** Exposed for {@code CapacityHealthIndicator} and for tests. */
+    public boolean isDegraded() {
+        return degradation.isDegraded();
     }
 
     private static int intValue(Object raw, int fallback) {

@@ -84,6 +84,22 @@ public class BroadcastMetrics {
         counter(ObservabilityConstants.Metrics.CAPACITY_DEGRADED, phoneNumberId).increment();
     }
 
+    /**
+     * One increment per rate-limiter call served by the local fallback.
+     *
+     * <p>Deliberately a counter and not a log line: this fires at dispatch-loop frequency during a
+     * Redis outage, which is exactly the volume a log pipeline should never be asked to absorb. The
+     * corresponding log line is emitted once, on the transition into and out of degradation.
+     */
+    public void rateLimiterDegraded(String phoneNumberId) {
+        counter(ObservabilityConstants.Metrics.RATE_LIMITER_DEGRADED, phoneNumberId).increment();
+    }
+
+    /** Dispatch from a number the control plane has never published capacity for. */
+    public void capacityUnknown(String phoneNumberId) {
+        counter(ObservabilityConstants.Metrics.CAPACITY_UNKNOWN, phoneNumberId).increment();
+    }
+
     // ----------------------------------------------------------------- send
 
     public void sendStarted() {

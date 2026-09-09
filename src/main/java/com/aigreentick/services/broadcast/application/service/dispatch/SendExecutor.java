@@ -22,6 +22,8 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+
+import java.util.Map;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -114,6 +116,8 @@ public class SendExecutor {
         Recipient recipient = send.recipient();
         String phoneNumberId = send.phoneNumberId();
 
+        Map<String, String> priorContext = MDC.getCopyOfContextMap();
+
         MDC.put(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, String.valueOf(send.batch().campaignId()));
         MDC.put(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, phoneNumberId);
         MDC.put(ObservabilityConstants.Logging.MDC_RECIPIENT_ID, String.valueOf(recipient.recipientId()));
@@ -141,7 +145,11 @@ public class SendExecutor {
                 // confirm(), in which case this is still a report the receiver can act on.
                 metrics.duplicateSuppressed(phoneNumberId);
                 String priorMessageId = idempotency.claimedMessageId(recipient.recipientId());
-                log.info("Duplicate suppressed; recipient was already dispatched wamid={}",
+                // DEBUG, not INFO: rare in steady state, but a consumer rebalance redelivers the
+                // whole batch and this then fires once per recipient — thousands of lines at the
+                // worst possible moment. The counter above is the signal worth alerting on, and
+                // TargetedDebugFilter can turn these back on for a single campaign when needed.
+                log.debug("Duplicate suppressed; recipient was already dispatched wamid={}",
                         priorMessageId);
                 resolve(send, RecipientOutcome.accepted(
                         recipient, priorMessageId, DomainConstants.Meta.STATUS_ACCEPTED, send.attempts()));
@@ -165,7 +173,11 @@ public class SendExecutor {
             if (permitHeld) {
                 inFlightPermits.release();
             }
-            MDC.clear();
+            if (priorContext == null) {
+                MDC.clear();
+            } else {
+                MDC.setContextMap(priorContext);
+            }
         }
     }
 

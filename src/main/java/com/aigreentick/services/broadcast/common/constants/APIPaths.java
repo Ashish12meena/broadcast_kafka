@@ -23,6 +23,20 @@ public final class APIPaths {
     /** Capacity currently believed for one phone number. */
     public static final String CAPACITY_BY_PHONE_NUMBER = "/capacity/{phoneNumberId}";
 
+    // ------------------------------------------------------------- log control API
+
+    /** Active log level overrides and targeted debug scopes on this instance. */
+    public static final String LOG_CONTROL = "/logging";
+
+    /** Turn verbose logging on for a single campaign, leaving every other campaign untouched. */
+    public static final String LOG_DEBUG_CAMPAIGN = "/logging/campaign/{campaignId}";
+
+    /** As above, scoped to one phone number. */
+    public static final String LOG_DEBUG_PHONE_NUMBER = "/logging/phone-number/{phoneNumberId}";
+
+    /** Name of the campaign path variable on the log control endpoints. */
+    public static final String PATH_VAR_CAMPAIGN_ID = "campaignId";
+
     // --------------------------------------------------------------- Meta Cloud API
 
     /**

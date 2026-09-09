@@ -7,6 +7,8 @@ import com.aigreentick.services.broadcast.infrastructure.config.BroadcastPropert
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static net.logstash.logback.argument.StructuredArguments.kv;
 import org.springframework.stereotype.Service;
 
 /**
@@ -66,8 +68,10 @@ public class CapacityDegrader {
         capacityStore.degrade(phoneNumberId, reduced, backoffUntil);
         metrics.degraded(phoneNumberId);
 
-        log.warn("Throughput reduced phoneNumberId={} {} -> {} mps after a Meta rate limit",
-                phoneNumberId, current.effectiveMps(), reduced);
+        log.warn("Throughput reduced after a Meta rate limit",
+                kv("phoneNumberId", phoneNumberId),
+                kv("previousMps", current.effectiveMps()),
+                kv("newMps", reduced));
     }
 
     /**

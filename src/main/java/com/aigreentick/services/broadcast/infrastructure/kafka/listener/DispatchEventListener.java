@@ -20,6 +20,7 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Reads batches from the outbound topic.
@@ -59,6 +60,11 @@ public class DispatchEventListener {
             @Header(KafkaHeaders.OFFSET) long offset,
             Acknowledgment acknowledgment) {
 
+        // Captured rather than cleared on the way out. clear() wipes context belonging to whatever
+        // called in, which is harmless while nothing upstream sets MDC and a difficult bug the day a
+        // filter or interceptor does.
+        Map<String, String> priorContext = MDC.getCopyOfContextMap();
+
         MDC.put(ObservabilityConstants.Logging.MDC_KAFKA_KEY, String.valueOf(key));
         MDC.put(ObservabilityConstants.Logging.MDC_PARTITION, String.valueOf(partition));
         MDC.put(ObservabilityConstants.Logging.MDC_OFFSET, String.valueOf(offset));
@@ -81,7 +87,11 @@ public class DispatchEventListener {
             sendToDeadLetter(rawMessage, DomainConstants.Messages.DESERIALIZATION_FAILED_PREFIX + e.getMessage(),
                     partition, offset, acknowledgment);
         } finally {
-            MDC.clear();
+            if (priorContext == null) {
+                MDC.clear();
+            } else {
+                MDC.setContextMap(priorContext);
+            }
         }
     }
 
@@ -102,6 +112,8 @@ public class DispatchEventListener {
     private void sendToDeadLetter(
             String rawMessage, String reason, int partition, long offset, Acknowledgment acknowledgment) {
 
+        // Reason only. The raw message is a recipient list and belongs on the dead letter topic,
+        // not in the log aggregator.
         log.error("Dispatch event rejected, sending to dead letter topic: {}", reason);
         try {
             deadLetter.send(rawMessage, reason, InfraConstants.Kafka.SOURCE_TOPIC_OUTBOUND_MESSAGES,

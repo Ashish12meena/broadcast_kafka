@@ -7,6 +7,8 @@ import com.aigreentick.services.broadcast.domain.model.DispatchBatch;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static net.logstash.logback.argument.StructuredArguments.kv;
 import org.springframework.stereotype.Service;
 
 /**
@@ -51,8 +53,10 @@ public class BatchIngestService implements DispatchBatchUseCase {
         InFlightBatch inFlight = new InFlightBatch(batch, onComplete);
         scheduler.enqueue(inFlight);
 
-        log.info("Batch accepted campaignId={} phoneNumberId={} recipients={}",
-                batch.campaignId(), batch.phoneNumberId(), batch.size());
+        log.info("Batch accepted",
+                kv("campaignId", batch.campaignId()),
+                kv("phoneNumberId", batch.phoneNumberId()),
+                kv("recipients", batch.size()));
 
         int deepest = scheduler.deepestQueue();
         if (deepest >= properties.dispatch().maxQueuedBatchesPerNumber()) {

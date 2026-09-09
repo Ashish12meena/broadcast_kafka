@@ -5,10 +5,29 @@
   Structured output matters here because the useful queries are all of the form "everything for this
   campaign" or "every rate limit on this phone number in the last hour", and those are impractical
   against free text. The MDC fields the send path sets - campaignId, phoneNumberId, recipientId -
-  become first-class fields under the json profile.
+  become first-class fields under the json profile, as do the kv() arguments on the batch and
+  capacity lines.
+
+  Two things changed here beyond the encoder:
+
+  1. The production appender is asynchronous. SendExecutor hands every send to a virtual thread, and
+     Logback's OutputStreamAppender writes under a synchronized block. On JDK 21 a synchronized block
+     that blocks pins its carrier thread, so a log collector that stops draining stdout does not just
+     slow logging down - it collapses dispatch concurrency to the carrier pool size. neverBlock
+     breaks that coupling: an INFO line is dropped rather than a WhatsApp send being stalled.
+
+  2. TargetedDebugFilter is registered globally. It reads campaignId and phoneNumberId from the MDC
+     and lets DEBUG through for a named target only, so investigating one customer's broadcast costs
+     a few hundred lines instead of a fleet-wide level change.
 -->
 <configuration>
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!--
+      Registered outside the profile blocks so targeted debug works in every environment. Cost on the
+      hot path is a single volatile read while nothing is targeted, which is almost always.
+    -->
+    <turboFilter class="com.aigreentick.services.broadcast.infrastructure.observability.TargetedDebugFilter"/>
 
     <springProfile name="dev,test">
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
@@ -16,6 +35,10 @@
                 <pattern>%d{HH:mm:ss.SSS} %-5level [%X{phoneNumberId:-}/%X{campaignId:-}] %logger{36} - %msg%n</pattern>
             </encoder>
         </appender>
+        <!--
+          Deliberately left synchronous. At a terminal you want ordered output and no dropped lines,
+          and there is no throughput to protect.
+        -->
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
         </root>
@@ -32,6 +55,8 @@
                     <message/>
                     <!-- campaignId, phoneNumberId, recipientId, and the Kafka coordinates -->
                     <mdc/>
+                    <!-- kv() arguments as top-level fields, so durationMs is a number not a substring -->
+                    <arguments/>
                     <stackTrace/>
                     <pattern>
                         <pattern>{"service":"broadcast-service"}</pattern>
@@ -39,8 +64,35 @@
                 </providers>
             </encoder>
         </appender>
-        <root level="INFO">
+
+        <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
             <appender-ref ref="JSON"/>
+
+            <!-- Roughly a second of headroom at the current send rate. -->
+            <queueSize>8192</queueSize>
+
+            <!--
+              Drop TRACE/DEBUG/INFO once the queue is 80% full; WARN and ERROR are never discarded by
+              this threshold, so an incident stays legible while routine chatter gives way.
+            -->
+            <discardingThreshold>20</discardingThreshold>
+
+            <!--
+              The important one. Blocking here would put log I/O back on the send path and pin
+              virtual threads, which is the failure this appender exists to prevent. Losing an INFO
+              line is strictly cheaper than stalling dispatch.
+
+              Monitor the appender's discarded count - silent loss is worse than loud loss, and that
+              counter is the only thing standing between you and not knowing.
+            -->
+            <neverBlock>true</neverBlock>
+
+            <!-- Caller data means a stack walk per event. Never worth it in production. -->
+            <includeCallerData>false</includeCallerData>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC"/>
         </root>
     </springProfile>
 </configuration>

@@ -6,6 +6,7 @@ import com.aigreentick.services.broadcast.application.port.out.RateLimiterPort;
 import com.aigreentick.services.broadcast.domain.model.RateGrant;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
+import com.aigreentick.services.broadcast.infrastructure.observability.RedisDegradationTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Primary;
@@ -15,6 +16,8 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The shared meter, backed by a Redis token bucket.
@@ -26,6 +29,13 @@ import java.util.List;
  *
  * <p>A local semaphore, however carefully sized, cannot do this: it is correct on one instance and
  * wrong on two.
+ *
+ * <h2>A note on logging in here</h2>
+ * {@code acquire} is called from {@code DispatchWorker.run()}, which is a loop with no sleep on the
+ * fallback path — a fallback grant is non-empty, so the loop drains it and comes straight back. Any
+ * per-call log statement in this class therefore fires at loop frequency, per active phone number,
+ * for the entire duration of a Redis outage. Every failure path below logs the transition and
+ * increments a counter instead; the counter is what tells you the rate.
  */
 @Component
 @Primary 
@@ -38,6 +48,16 @@ public class RedisRateLimiter implements RateLimiterPort {
     private final BroadcastProperties properties;
     private final LocalFallbackRateLimiter fallback;
     private final BroadcastMetrics metrics;
+
+    private final RedisDegradationTracker degradation =
+            new RedisDegradationTracker(log, "rate limiting");
+
+    /**
+     * Numbers already warned about for missing capacity. Unlike a Redis outage this condition does
+     * not clear on its own — it persists until the control plane publishes capacity — so without
+     * this set a single unregistered number logs on every loop iteration indefinitely.
+     */
+    private final Set<String> warnedUnknownCapacity = ConcurrentHashMap.newKeySet();
 
     public RedisRateLimiter(
             StringRedisTemplate redis,
@@ -70,8 +90,10 @@ public class RedisRateLimiter implements RateLimiterPort {
                     String.valueOf(InfraConstants.Redis.TOKEN_BUCKET_TTL_SECONDS));
 
             if (result == null || result.size() < InfraConstants.Redis.TOKEN_BUCKET_RESULT_SIZE) {
-                log.warn("Token bucket returned no result phoneNumberId={}; using local fallback",
-                        phoneNumberId);
+                // Redis answered but the script did not return what it should. Same treatment as an
+                // outage: it repeats at loop frequency until whatever is wrong is fixed.
+                degradation.enter("token bucket script returned no usable result");
+                metrics.rateLimiterDegraded(phoneNumberId);
                 return fallbackGrant(phoneNumberId, requested);
             }
 
@@ -82,9 +104,19 @@ public class RedisRateLimiter implements RateLimiterPort {
                 // Redis is healthy but the Messaging Service has never published capacity for this
                 // number. Worth a warning: it means a batch is being dispatched from a number the
                 // control plane does not know about.
-                log.warn("No capacity published for phoneNumberId={}; using default rate", phoneNumberId);
+                if (warnedUnknownCapacity.add(phoneNumberId)) {
+                    log.warn("No capacity published for phoneNumberId={}; using default rate until the "
+                            + "control plane publishes one", phoneNumberId);
+                }
+                metrics.capacityUnknown(phoneNumberId);
                 return fallbackGrant(phoneNumberId, requested);
             }
+
+            // Reached only on a healthy round trip, so this is the correct place to close out a
+            // degradation. Both calls are compareAndSet-guarded and cost a single atomic read when
+            // there is nothing to change, which is the overwhelmingly common case.
+            degradation.exit();
+            warnedUnknownCapacity.remove(phoneNumberId);
 
             metrics.tokensGranted(phoneNumberId, (int) granted);
             return granted > 0
@@ -95,8 +127,8 @@ public class RedisRateLimiter implements RateLimiterPort {
             // Never fail open. Under-sending delays a campaign; over-sending earns rate limits that
             // lower the number's quality rating, which lowers its throughput tier — a much more
             // expensive and much slower failure to undo.
-            log.warn("Redis unavailable for rate limiting phoneNumberId={} reason={}; using local fallback",
-                    phoneNumberId, e.toString());
+            degradation.enter(e.toString());
+            metrics.rateLimiterDegraded(phoneNumberId);
             return fallbackGrant(phoneNumberId, requested);
         }
     }
@@ -105,5 +137,10 @@ public class RedisRateLimiter implements RateLimiterPort {
         RateGrant grant = fallback.acquire(phoneNumberId, requested);
         metrics.tokensGranted(phoneNumberId, grant.granted());
         return grant;
+    }
+
+    /** Exposed for {@code CapacityHealthIndicator} and for tests. */
+    public boolean isDegraded() {
+        return degradation.isDegraded();
     }
 }

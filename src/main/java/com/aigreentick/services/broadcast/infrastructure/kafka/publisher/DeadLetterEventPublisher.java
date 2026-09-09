@@ -2,6 +2,7 @@ package com.aigreentick.services.broadcast.infrastructure.kafka.publisher;
 
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.common.constants.ObservabilityConstants;
+import com.aigreentick.services.broadcast.common.util.LogSafe;
 import com.aigreentick.services.broadcast.application.port.out.DeadLetterPort;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
@@ -65,10 +66,15 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
             Thread.currentThread().interrupt();
             log.error("Interrupted while dead-lettering a message", e);
         } catch (Exception e) {
-            // Nowhere left to put it. Logging the payload is the last resort that keeps it
-            // recoverable from the log aggregator.
-            log.error("Could not dead-letter a message from {}-{} offset {}. Payload: {}",
-                    sourceTopic, partition, offset, rawPayload, e);
+            // Nowhere left to put it, but the payload still does not go in the log: it is a list of
+            // recipients, and every one is a phone number belonging to a real person. The message is
+            // recoverable without it — the source topic still holds the bytes and the coordinates
+            // below say exactly where. The fingerprint is enough to confirm two occurrences are the
+            // same message, which is all the payload was ever needed for here.
+            log.error("Could not dead-letter a message from {}-{} offset {} fingerprint={} bytes={}",
+                    sourceTopic, partition, offset,
+                    LogSafe.fingerprint(rawPayload),
+                    rawPayload == null ? 0 : rawPayload.length(), e);
         }
     }
 

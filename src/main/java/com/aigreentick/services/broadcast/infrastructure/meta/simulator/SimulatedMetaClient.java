@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
 import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.common.util.LogSafe;
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.MetaSendPort;
 import com.aigreentick.services.broadcast.common.constants.SimulatorConstants;
@@ -50,7 +51,9 @@ public class SimulatedMetaClient implements MetaSendPort {
             MetaStatusCallbackSimulator callbackSimulator, ObjectMapper objectMapper) {
         this.callbackSimulator = callbackSimulator;
         this.objectMapper = objectMapper;
-        log.warn("Test profile active: Meta sends are SIMULATED. No message will reach WhatsApp.");
+        // INFO, not WARN: this is a startup banner describing the profile working as configured.
+        // A WARN that fires every time the test profile boots is a WARN nobody reads.
+        log.info("Test profile active: Meta sends are SIMULATED. No message will reach WhatsApp.");
     }
 
     @Override
@@ -69,8 +72,10 @@ public class SimulatedMetaClient implements MetaSendPort {
                     phoneNumberId, wabaAccountId, response.providerMessageId(), recipient,
                     callbackData);
 
+            // Masked even here. Test environments are routinely loaded with production exports, and
+            // a habit that only holds in prod is not a habit.
             log.debug("Simulated send phoneNumberId={} to={} wamid={}",
-                    phoneNumberId, recipient, response.providerMessageId());
+                    phoneNumberId, LogSafe.maskPhone(recipient), response.providerMessageId());
             return response;
 
         } catch (Exception e) {

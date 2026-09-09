@@ -21,7 +21,7 @@ spring:
     redis:
       host: ${REDIS_HOST:146.88.24.113}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:2024@Bajajsys}
       timeout: 2s
       lettuce:
         pool:
@@ -122,10 +122,18 @@ eureka:
     instance-id: ${spring.application.name}:${server.port}
 
 management:
+  # Separate port so the actuator and the internal ops API are not reachable through the public
+  # ingress. This matters more now than it did: an unauthenticated /actuator/loggers is a
+  # denial-of-service vector, because one request setting the service to TRACE is enough to drown
+  # the dispatch loop in its own output.
+  server:
+    port: 9090
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        # loggers added so a level can be changed on a running pod without a redeploy. Redeploying
+        # to raise a log level restarts the pod and destroys the state being investigated.
+        include: health,info,prometheus,metrics,loggers
   endpoint:
     health:
       probes:
@@ -144,3 +152,8 @@ logging:
   level:
     com.aigreentick.services.broadcast: INFO
     org.apache.kafka: WARN
+
+    # The Redis classes fall back to local behaviour rather than failing, and now report that as a
+    # transition plus a counter rather than per call. Kept at INFO so the recovery line is visible;
+    # raise to DEBUG through /actuator/loggers when investigating a specific fallback.
+    com.aigreentick.services.broadcast.infrastructure.redis: INFO

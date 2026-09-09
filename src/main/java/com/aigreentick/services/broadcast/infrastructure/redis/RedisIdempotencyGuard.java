@@ -3,6 +3,7 @@ package com.aigreentick.services.broadcast.infrastructure.redis;
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.IdempotencyPort;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
+import com.aigreentick.services.broadcast.infrastructure.observability.RedisDegradationTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -26,6 +27,11 @@ import org.springframework.stereotype.Component;
  * <h2>Failing open when Redis is down</h2>
  * If the claim cannot be taken, the send proceeds. Refusing to send during a Redis outage would stop
  * the platform to prevent a duplicate that only occurs on the much rarer redelivery path.
+ *
+ * <p>{@code claim} runs once per recipient, so a per-failure log line here means one line per
+ * recipient for the whole outage — at eighty sends per second per number that is a flood arriving
+ * precisely when the log pipeline is needed for something else. The failure is logged as a
+ * transition instead.
  */
 @Component
 public class RedisIdempotencyGuard implements IdempotencyPort {
@@ -34,6 +40,9 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
 
     private final StringRedisTemplate redis;
     private final BroadcastProperties properties;
+
+    private final RedisDegradationTracker degradation =
+            new RedisDegradationTracker(log, "the idempotency guard");
 
     public RedisIdempotencyGuard(StringRedisTemplate redis, BroadcastProperties properties) {
         this.redis = redis;
@@ -50,10 +59,13 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
                     RedisKeys.sentClaim(recipientId),
                     InfraConstants.Redis.CLAIM_MARKER,
                     properties.idempotency().claimTtl());
+            degradation.exit();
             return Boolean.TRUE.equals(acquired);
 
         } catch (DataAccessException e) {
-            log.warn("Could not claim recipientId={} reason={}; proceeding with send", recipientId, e.toString());
+            // Failing open is the deliberate choice documented above. What must not happen is one
+            // log line per recipient while it lasts.
+            degradation.enter(e.toString() + "; sends proceed unguarded");
             return true;
         }
     }
@@ -99,5 +111,10 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
         } catch (DataAccessException e) {
             log.debug("Could not confirm claim recipientId={} reason={}", recipientId, e.toString());
         }
+    }
+
+    /** Exposed for {@code CapacityHealthIndicator} and for tests. */
+    public boolean isDegraded() {
+        return degradation.isDegraded();
     }
 }
