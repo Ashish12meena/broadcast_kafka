@@ -58,5 +58,5 @@ eureka:
 
 logging:
   level:
-    com.aigreentick.services.broadcast: DEBUG
-    com.aigreentick.services.broadcast.infrastructure.meta.simulator: DEBUG
+    com.aigreentick.services.broadcast: OFF
+    com.aigreentick.services.broadcast.infrastructure.meta.simulator: OFF
