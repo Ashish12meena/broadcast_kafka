@@ -130,6 +130,18 @@ public final class ObservabilityConstants {
         public static final String MDC_CAMPAIGN_ID = "campaignId";
         public static final String MDC_PHONE_NUMBER_ID = "phoneNumberId";
         public static final String MDC_RECIPIENT_ID = "recipientId";
+
+        /**
+         * The campaign run id, assigned by the Messaging Service when a campaign is started and
+         * carried across the Kafka hop on {@code DispatchEvent}.
+         *
+         * <p>This string MUST match {@code CampaignTrace.MDC_TRACE} in the Messaging Service. Both
+         * services logged a campaign id already and neither logged anything tying one <em>run</em>
+         * together across the boundary — which is exactly where messages go missing. If the two
+         * constants drift, the log lines stop correlating and the field silently stops being worth
+         * having.
+         */
+        public static final String MDC_TRACE_ID = "campaignTraceId";
         public static final String MDC_KAFKA_KEY = "kafkaKey";
         public static final String MDC_PARTITION = "partition";
         public static final String MDC_OFFSET = "offset";

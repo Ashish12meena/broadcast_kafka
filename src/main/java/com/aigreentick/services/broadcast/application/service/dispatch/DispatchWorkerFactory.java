@@ -5,6 +5,7 @@ import com.aigreentick.services.broadcast.application.service.ingest.ConsumerFlo
 import com.aigreentick.services.broadcast.application.service.ingest.PhoneNumberQueue;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
+import com.aigreentick.services.broadcast.infrastructure.redis.RedisQueueDepthPublisher;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
@@ -13,7 +14,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>Workers are per-queue objects with their own state, so they cannot be Spring beans. This
  * factory holds the collaborators they need and hands them over at construction, which keeps the
- * worker itself free of any dependency lookup.
+ * worker free of any dependency lookup.
  */
 @Component
 public class DispatchWorkerFactory {
@@ -24,6 +25,7 @@ public class DispatchWorkerFactory {
     private final ConsumerFlowController flowController;
     private final BroadcastProperties properties;
     private final BroadcastMetrics metrics;
+    private final RedisQueueDepthPublisher depthPublisher;
 
     public DispatchWorkerFactory(
             RateLimiterPort rateLimiter,
@@ -33,17 +35,19 @@ public class DispatchWorkerFactory {
             @Lazy DispatchScheduler scheduler,
             ConsumerFlowController flowController,
             BroadcastProperties properties,
-            BroadcastMetrics metrics) {
+            BroadcastMetrics metrics,
+            RedisQueueDepthPublisher depthPublisher) {
         this.rateLimiter = rateLimiter;
         this.sendExecutor = sendExecutor;
         this.scheduler = scheduler;
         this.flowController = flowController;
         this.properties = properties;
         this.metrics = metrics;
+        this.depthPublisher = depthPublisher;
     }
 
     public DispatchWorker create(PhoneNumberQueue queue) {
-        return new DispatchWorker(
-                queue, rateLimiter, sendExecutor, scheduler, flowController, properties, metrics);
+        return new DispatchWorker(queue, rateLimiter, sendExecutor, scheduler,
+                flowController, properties, metrics, depthPublisher);
     }
 }

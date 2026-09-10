@@ -9,12 +9,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * A batch being worked on, with the bookkeeping needed to know when it is finished.
  *
- * <p>The Kafka offset for a batch may only be acknowledged once every recipient in it has a recorded
- * outcome. Kafka has no partial acknowledgement, so the offset represents the whole message: commit
- * it early and a crash loses the recipients that had not been sent yet, with no record they existed.
+ * <p>The Kafka offset for a batch may only be acknowledged once every recipient in it has a
+ * <em>durable</em> outcome. Kafka has no partial acknowledgement, so the offset represents the whole
+ * message: commit it early and a crash loses the recipients that had not been sent yet, with no
+ * record they existed.
  *
  * <p>{@code remaining} counts down as outcomes arrive, from any thread. {@code completed} guards the
  * completion callback so it runs exactly once even if the count reaches zero twice under a race.
+ *
+ * <p>Used as a map key by {@code ResultCollector}, which is why identity equality is left alone —
+ * two batches with identical contents are still two separate units of work with two separate
+ * offsets.
  */
 public final class InFlightBatch {
 
@@ -43,6 +48,11 @@ public final class InFlightBatch {
 
     public String phoneNumberId() {
         return batch.phoneNumberId();
+    }
+
+    /** The campaign run this batch belongs to, echoed onto every outcome it produces. */
+    public String traceId() {
+        return batch.traceId();
     }
 
     public long ageMs() {

@@ -22,14 +22,13 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-
-import java.util.Map;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -39,19 +38,20 @@ import java.util.concurrent.TimeUnit;
  * Performs one send and decides what happens next.
  *
  * <h2>Concurrency is bounded here, rate is not</h2>
- * The semaphore caps how many sends this instance has in flight at once. It is
- * not the rate limit —
- * that lives in Redis and is shared — it is a local bulkhead so one pod cannot
- * exhaust its own
- * sockets. A local limit could never enforce the rate correctly anyway: it is
- * right on one instance
+ * The semaphore caps how many sends this instance has in flight at once. It is not the rate limit —
+ * that lives in Redis and is shared — it is a local bulkhead so one pod cannot exhaust its own
+ * sockets. A local limit could never enforce the rate correctly anyway: it is right on one instance
  * and wrong on two.
  *
+ * <h2>The token arrives with the batch</h2>
+ * {@code DispatchBatch} carries it, fetched once per batch by the Messaging Service. Nothing is
+ * cached here, so a rotation takes effect on the next batch rather than needing invalidation — see
+ * {@code DispatchEvent} for why the credential travels over Kafka and what it would take to change
+ * that.
+ *
  * <h2>Retries go back through the meter</h2>
- * A retryable failure is put back on the queue rather than re-sent from here.
- * It therefore has to
- * acquire tokens again like any other send, which makes a retry storm
- * impossible by construction:
+ * A retryable failure is put back on the queue rather than re-sent from here. It therefore has to
+ * acquire tokens again like any other send, which makes a retry storm impossible by construction:
  * retrying costs capacity, so a number cannot exceed its rate by failing.
  */
 @Service
@@ -59,10 +59,7 @@ public class SendExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(SendExecutor.class);
 
-    /**
-     * Prefix for the per-phone-number circuit breaker name. One breaker per number, because Meta
-     * being unreachable for one number says nothing about the others.
-     */
+    /** One breaker per number, because Meta being unreachable for one says nothing about others. */
     private static final String CIRCUIT_BREAKER_NAME_PREFIX = "meta-";
 
     private final MetaSendPort metaSend;
@@ -118,9 +115,14 @@ public class SendExecutor {
 
         Map<String, String> priorContext = MDC.getCopyOfContextMap();
 
-        MDC.put(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID, String.valueOf(send.batch().campaignId()));
+        MDC.put(ObservabilityConstants.Logging.MDC_CAMPAIGN_ID,
+                String.valueOf(send.batch().campaignId()));
         MDC.put(ObservabilityConstants.Logging.MDC_PHONE_NUMBER_ID, phoneNumberId);
-        MDC.put(ObservabilityConstants.Logging.MDC_RECIPIENT_ID, String.valueOf(recipient.recipientId()));
+        MDC.put(ObservabilityConstants.Logging.MDC_RECIPIENT_ID,
+                String.valueOf(recipient.recipientId()));
+        if (send.batch().traceId() != null) {
+            MDC.put(ObservabilityConstants.Logging.MDC_TRACE_ID, send.batch().traceId());
+        }
 
         boolean permitHeld = false;
         try {
@@ -131,28 +133,17 @@ public class SendExecutor {
                 // Already sent by an earlier delivery of this batch, so Meta must not be called
                 // again. The outcome is still reported, and that is the correction: reporting
                 // nothing left the Messaging Service holding a row in PROCESSING with no result
-                // ever arriving, which ProcessingStuckCleanupJob eventually released and
-                // re-sent —
-                // producing the exact duplicate this guard exists to prevent, by way of the
-                // guard.
-                //
-                // The wamid comes from the claim itself: confirm() overwrites the CLAIMED
-                // marker
-                // with the provider message id on a successful send, so a suppressed duplicate
-                // can
-                // recover it. Null when the original send failed permanently or the claim
-                // predates
-                // confirm(), in which case this is still a report the receiver can act on.
+                // ever arriving, which the stuck sweep eventually released and re-sent — producing
+                // the exact duplicate this guard exists to prevent, by way of the guard.
                 metrics.duplicateSuppressed(phoneNumberId);
                 String priorMessageId = idempotency.claimedMessageId(recipient.recipientId());
                 // DEBUG, not INFO: rare in steady state, but a consumer rebalance redelivers the
                 // whole batch and this then fires once per recipient — thousands of lines at the
-                // worst possible moment. The counter above is the signal worth alerting on, and
-                // TargetedDebugFilter can turn these back on for a single campaign when needed.
+                // worst possible moment. The counter above is the signal worth alerting on.
                 log.debug("Duplicate suppressed; recipient was already dispatched wamid={}",
                         priorMessageId);
-                resolve(send, RecipientOutcome.accepted(
-                        recipient, priorMessageId, DomainConstants.Meta.STATUS_ACCEPTED, send.attempts()));
+                resolve(send, RecipientOutcome.accepted(recipient, priorMessageId,
+                        DomainConstants.Meta.STATUS_ACCEPTED, send.attempts()));
                 return;
             }
 
@@ -162,13 +153,13 @@ public class SendExecutor {
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            resolve(send, RecipientOutcome.failed(
-                    recipient, DomainConstants.ErrorCodes.INTERRUPTED, DomainConstants.Messages.SEND_INTERRUPTED, true,
-                    send.attempts()));
+            resolve(send, RecipientOutcome.failed(recipient, DomainConstants.ErrorCodes.INTERRUPTED,
+                    DomainConstants.Messages.SEND_INTERRUPTED, true, send.attempts()));
         } catch (RuntimeException e) {
             log.error("Unexpected failure while sending", e);
-            resolve(send, RecipientOutcome.failed(
-                    recipient, DomainConstants.ErrorCodes.INTERNAL_ERROR, e.getMessage(), true, send.attempts()));
+            resolve(send, RecipientOutcome.failed(recipient,
+                    DomainConstants.ErrorCodes.INTERNAL_ERROR, e.getMessage(), true,
+                    send.attempts()));
         } finally {
             if (permitHeld) {
                 inFlightPermits.release();
@@ -204,10 +195,8 @@ public class SendExecutor {
             metrics.sendDuration(phoneNumberId, elapsed);
 
             if (response.transportFailure()) {
-                // Only unreachability counts against the breaker. A business rejection means
-                // Meta is
-                // healthy and answering, and tripping on those would stop a working phone
-                // number.
+                // Only unreachability counts against the breaker. A business rejection means Meta
+                // is healthy and answering, and tripping on those would stop a working number.
                 breaker.onError(elapsed.toNanos(), TimeUnit.NANOSECONDS,
                         new IOException(response.errorMessage()));
             } else {
@@ -227,8 +216,8 @@ public class SendExecutor {
         if (response.success()) {
             idempotency.confirm(recipient.recipientId(), response.providerMessageId());
             metrics.sendResult(phoneNumberId, true, null);
-            resolve(send, RecipientOutcome.accepted(
-                    recipient, response.providerMessageId(), response.messageStatus(), attempt));
+            resolve(send, RecipientOutcome.accepted(recipient, response.providerMessageId(),
+                    response.messageStatus(), attempt));
             return;
         }
 
@@ -237,7 +226,8 @@ public class SendExecutor {
                 : MetaErrorCatalog.classify(response.errorCode());
 
         String errorCode = response.errorCode() == null
-                ? (response.transportFailure() ? DomainConstants.ErrorCodes.TRANSPORT : DomainConstants.ErrorCodes.UNKNOWN)
+                ? (response.transportFailure()
+                        ? DomainConstants.ErrorCodes.TRANSPORT : DomainConstants.ErrorCodes.UNKNOWN)
                 : String.valueOf(response.errorCode());
 
         metrics.sendResult(phoneNumberId, false, errorCode);
@@ -245,16 +235,14 @@ public class SendExecutor {
 
         switch (errorClass) {
             case RATE_LIMIT -> {
-                // The number is over its limit, so slow the number down rather than this
-                // message.
+                // The number is over its limit, so slow the number down rather than this message.
                 // Handling it as an ordinary per-message backoff would leave every other worker
                 // pushing the same number further over the limit.
                 degrader.degradeAfterRateLimit(phoneNumberId);
                 retryOrFail(send, errorCode, response.errorMessage(), attempt, Duration.ZERO);
             }
             case UPGRADE_IN_PROGRESS -> {
-                // The number is briefly unusable while Meta upgrades its throughput. Not a
-                // fault,
+                // The number is briefly unusable while Meta upgrades its throughput. Not a fault,
                 // and emphatically not a reason to reduce its rate.
                 degrader.suppressForUpgrade(phoneNumberId);
                 retryOrFail(send, errorCode, response.errorMessage(), attempt, Duration.ZERO);
@@ -268,55 +256,50 @@ public class SendExecutor {
                 retryOrFail(send, errorCode, response.errorMessage(), attempt,
                         retryPolicy.delayFor(attempt));
             case CREDENTIAL -> {
-                // Retrying the payload cannot help; the token is the problem. Reported as
-                // retryable
-                // so the Messaging Service can refresh it and re-dispatch.
+                // Retrying the payload cannot help; the token is the problem. Reported retryable
+                // so the Messaging Service re-dispatches with a freshly fetched token — nothing is
+                // cached here, so the next batch already carries a new one.
                 log.error("Meta rejected the access token errorCode={} message={}",
                         errorCode, response.errorMessage());
-                resolve(send, RecipientOutcome.failed(
-                        recipient, errorCode, response.errorMessage(), true, attempt));
+                resolve(send, RecipientOutcome.failed(recipient, errorCode,
+                        response.errorMessage(), true, attempt));
             }
             case PERMANENT -> {
                 idempotency.confirm(recipient.recipientId(), null);
-                resolve(send, RecipientOutcome.failed(
-                        recipient, errorCode, response.errorMessage(), false, attempt));
+                resolve(send, RecipientOutcome.failed(recipient, errorCode,
+                        response.errorMessage(), false, attempt));
             }
         }
     }
 
-    private void retryOrFail(
-            PendingSend send, String errorCode, String errorMessage, int attempt, Duration delay) {
-
+    private void retryOrFail(PendingSend send, String errorCode, String errorMessage,
+                             int attempt, Duration delay) {
         if (!retryPolicy.shouldRetry(attempt)) {
-            log.warn("Giving up after {} attempts errorCode={} message={}", attempt, errorCode, errorMessage);
-            resolve(send, RecipientOutcome.failed(
-                    send.recipient(), errorCode, errorMessage, true, attempt));
+            log.warn("Giving up after {} attempts errorCode={} message={}",
+                    attempt, errorCode, errorMessage);
+            resolve(send, RecipientOutcome.failed(send.recipient(), errorCode, errorMessage,
+                    true, attempt));
             return;
         }
 
         metrics.retryScheduled(send.phoneNumberId());
-        // Released so a retry is not blocked by its own earlier claim. The window in
-        // which a
-        // duplicate could slip through is the retry delay, and the queue holds only
-        // this instance's
-        // copy of the work.
+        // Released so a retry is not blocked by its own earlier claim. The window in which a
+        // duplicate could slip through is the retry delay, and the queue holds only this
+        // instance's copy of the work.
         idempotency.release(send.recipient().recipientId());
 
         if (delay.isZero() || delay.isNegative()) {
             scheduler.requeue(send);
         } else {
-            scheduledExecutor.schedule(
-                    () -> scheduler.requeue(send), delay.toMillis(), TimeUnit.MILLISECONDS);
+            scheduledExecutor.schedule(() -> scheduler.requeue(send),
+                    delay.toMillis(), TimeUnit.MILLISECONDS);
         }
     }
 
     /**
-     * Records the outcome and, if this was the batch's last recipient, completes
-     * the batch.
+     * Records the outcome and, if this was the batch's last recipient, completes the batch.
      *
-     * @param outcome null when the recipient needs no report, as with a suppressed
-     *                duplicate whose
-     *                original send was already reported
+     * @param outcome null when the recipient needs no report
      */
     private void resolve(PendingSend send, RecipientOutcome outcome) {
         if (outcome != null) {
@@ -328,34 +311,25 @@ public class SendExecutor {
         try {
             resultCollector.completeBatch(send.batch());
         } catch (RuntimeException e) {
-            // completeBatch publishes to Kafka and rethrows on failure. Letting that escape
-            // was a
-            // silent-loss path: called from execute()'s try block it landed in the catch
-            // below,
-            // which called resolve() a second time, decremented an already-zero counter,
-            // and threw
-            // again from inside a catch — so the batch's outcomes were lost, the offset was
-            // never
-            // acknowledged, and nothing above the executor ever heard about it. The symptom
-            // downstream is a campaign whose recipients stay PROCESSING and whose delivery
-            // receipts are dropped for a wamid nobody recorded.
+            // completeBatch joins the outstanding publish futures and rethrows if any failed.
+            // Letting that escape was a silent-loss path: called from execute()'s try block it
+            // landed in the catch below, which called resolve() a second time, decremented an
+            // already-zero counter, and threw again from inside a catch — so the batch's outcomes
+            // were lost, the offset was never acknowledged, and nothing above the executor ever
+            // heard about it.
             //
-            // Logged here and swallowed deliberately: the offset stays uncommitted, so
-            // Kafka
-            // redelivers the whole batch and the idempotency claims make the redelivery
-            // safe.
-            log.error("Could not complete batch campaignId={} phoneNumberId={}; the offset will "
-                    + "not be acknowledged and Kafka will redeliver",
-                    send.batch().campaignId(), send.phoneNumberId(), e);
+            // Logged here and swallowed deliberately: the offset stays uncommitted, so Kafka
+            // redelivers the whole batch and the idempotency claims make the redelivery safe.
+            log.error("Could not complete batch campaignId={} phoneNumberId={} traceId={}; the "
+                            + "offset will not be acknowledged and Kafka will redeliver",
+                    send.batch().campaignId(), send.phoneNumberId(), send.batch().traceId(), e);
         }
     }
 
     /**
      * Waits for in-flight sends to finish.
      *
-     * <p>
-     * Acquiring every permit is how it waits: once all of them are held, nothing is
-     * in flight.
+     * <p>Acquiring every permit is how it waits: once all of them are held, nothing is in flight.
      */
     @PreDestroy
     public void awaitInFlight() {

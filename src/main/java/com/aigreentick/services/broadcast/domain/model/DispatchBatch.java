@@ -9,12 +9,19 @@ import java.util.List;
  * <p>{@code phoneNumberId} is Meta's identifier and is the key for every rate decision in this
  * service. {@code wabaAccountId} is the platform's own identifier, carried only for logging and
  * reconciliation — the two are different values and must never be substituted for one another.
+ *
+ * <p>{@code accessToken} arrives on the Kafka payload. See {@code DispatchEvent} for why that is a
+ * known problem and what moving the fetch to this service would actually require.
+ *
+ * @param traceId the campaign run, carried through to the result event so one recipient can be
+ *                followed end to end across both services
  */
 public record DispatchBatch(
         Long campaignId,
         String phoneNumberId,
         Long wabaAccountId,
         String accessToken,
+        String traceId,
         List<Recipient> recipients) {
 
     public int size() {

@@ -1,59 +1,54 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.event;
 
-import com.aigreentick.services.broadcast.common.constants.DomainConstants;
-import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.util.List;
 
 /**
- * What the Messaging Service publishes on the outbound topic.
+ * One batch of recipients to send, as it arrives on {@code whatsapp.messages.outbound}.
  *
- * <p>{@code phoneNumberId} is Meta's string identifier and {@code wabaAccountId} is the platform's
- * numeric one. They are different values for different things and must never be substituted for one
- * another — using the account identifier in the Graph API path produces a total failure against a
- * number that looks correctly configured.
+ * <h2>{@code accessToken} is a live credential arriving over Kafka</h2>
+ * It is a known problem, not a design choice. The token is at rest on the topic for its whole
+ * retention period, replicated to every broker, and readable by anything with consumer rights.
  *
- * <p>Snake-case aliases are accepted alongside camel case so a producer-side naming change cannot
- * silently drop a field. Unknown fields are ignored so the producer can add one without a coordinated
- * release.
+ * <p>Moving the fetch to this side is not a one-field change: this service has no internal HTTP
+ * client, no service-to-service credentials, and no organization or project context on this path,
+ * so resolving the token here means giving it all three — an authorization decision about whether
+ * the WABA service should trust this service directly. Until that is made, restrict the topic's
+ * ACLs, shorten its retention, and rotate on the assumption the tokens have been readable.
+ *
+ * <h2>{@code traceId} is new and is not optional</h2>
+ * Both services logged a campaign id and neither logged anything tying one <em>run</em> together
+ * across the Kafka hop — which is precisely where messages go missing. This is the field that makes
+ * "where did the other two hundred go" a single grep. It is propagated into MDC on receipt and back
+ * out on the result event.
+ *
+ * @param validationError set by the producer when it knows the batch is unsendable; the listener
+ *                        dead-letters rather than attempting it
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record DispatchEvent(
-        @JsonAlias("campaign_id") Long campaignId,
-        @JsonAlias("phone_number_id") String phoneNumberId,
-        @JsonAlias("waba_account_id") Long wabaAccountId,
-        @JsonAlias("access_token") String accessToken,
-        List<PayloadItem> payloads) {
+        Long campaignId,
+        String phoneNumberId,
+        Long wabaAccountId,
+        String accessToken,
+        String traceId,
+        List<Payload> payloads,
+        String validationError) {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record PayloadItem(
-            @JsonAlias("recipient_id") Long recipientId,
-            @JsonAlias("message_id") Long messageId,
-            @JsonAlias("contact_id") Long contactId,
-            /** The complete Meta request body, rendered upstream and forwarded verbatim. */
-            @JsonAlias("request_payload") String requestPayload) {
+    public record Payload(
+            Long recipientId,
+            Long messageId,
+            Long contactId,
+            String requestPayload) {
     }
 
-    /** @return null when the event is usable, otherwise why it is not */
     public String validationError() {
-        if (campaignId == null) {
-            return DomainConstants.Messages.VALIDATION_CAMPAIGN_ID_MISSING;
-        }
-        if (phoneNumberId == null || phoneNumberId.isBlank()) {
-            return DomainConstants.Messages.VALIDATION_PHONE_NUMBER_ID_MISSING;
-        }
-        if (accessToken == null || accessToken.isBlank()) {
-            return DomainConstants.Messages.VALIDATION_ACCESS_TOKEN_MISSING;
-        }
-        if (payloads == null || payloads.isEmpty()) {
-            return DomainConstants.Messages.VALIDATION_PAYLOADS_EMPTY;
-        }
-        boolean anyPayloadMissing = payloads.stream()
-                .anyMatch(item -> item.requestPayload() == null || item.requestPayload().isBlank());
-        if (anyPayloadMissing) {
-            return DomainConstants.Messages.VALIDATION_PAYLOAD_BODY_MISSING;
-        }
-        return null;
+        return validationError;
+    }
+
+    public int size() {
+        return payloads == null ? 0 : payloads.size();
     }
 }

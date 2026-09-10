@@ -58,7 +58,7 @@ class PhoneNumberQueueTest {
         // early discards the recipients that were never sent.
         boolean[] completed = {false};
         InFlightBatch inFlight = new InFlightBatch(
-                new DispatchBatch(1L, PHONE_NUMBER_ID, 10L, "token", recipients(3)),
+                new DispatchBatch(1L, PHONE_NUMBER_ID, 10L, "token", "01TESTTRACE0000000000000A", recipients(3)),
                 () -> completed[0] = true);
 
         assertThat(inFlight.recordResolved()).isFalse();
@@ -88,7 +88,7 @@ class PhoneNumberQueueTest {
 
     private static InFlightBatch batch(long campaignId, int size) {
         return new InFlightBatch(
-                new DispatchBatch(campaignId, PHONE_NUMBER_ID, 10L, "token", recipients(size)),
+                new DispatchBatch(campaignId, PHONE_NUMBER_ID, 10L, "token", "01TESTTRACE0000000000000A", recipients(size)),
                 () -> { });
     }
 

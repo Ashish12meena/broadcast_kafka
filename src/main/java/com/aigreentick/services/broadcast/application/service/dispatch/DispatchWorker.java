@@ -8,6 +8,7 @@ import com.aigreentick.services.broadcast.application.service.ingest.PhoneNumber
 import com.aigreentick.services.broadcast.domain.model.RateGrant;
 import com.aigreentick.services.broadcast.infrastructure.config.BroadcastProperties;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
+import com.aigreentick.services.broadcast.infrastructure.redis.RedisQueueDepthPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,14 +22,18 @@ import java.util.List;
  * The loop asks for tokens, sends what it is granted, and asks again. It never waits for the sends
  * it submitted to finish. An earlier arrangement that dispatched a fixed window and blocked until
  * all of them returned achieved {@code windowSize / p99Latency} messages per second rather than
- * {@code windowSize} per second — with a window of eighty and a two-second tail latency, forty
- * messages per second against an eighty message per second allowance. The barrier was the
- * bottleneck, not the limit.
+ * {@code windowSize} per second — the barrier was the bottleneck, not the limit.
  *
  * <h2>Asking for only what is wanted</h2>
- * The request is {@code min(chunkSize, pendingRecipients)}. Asking for a full chunk when only ten
+ * The request is {@code min(chunkSize, pendingRecipients)}. Asking for a full chunk when ten
  * recipients remain would spend tokens that are then thrown away, and those tokens are the number's
  * real capacity.
+ *
+ * <h2>The depth is published every pass</h2>
+ * This loop is the only place that knows, moment to moment, how much work is outstanding for a
+ * number. Publishing it here — rather than on a timer — means the reading is never older than one
+ * iteration, which is what lets the Messaging Service's credit loop be tight enough to be useful
+ * without being so tight that it oscillates.
  */
 public final class DispatchWorker implements Runnable {
 
@@ -41,6 +46,7 @@ public final class DispatchWorker implements Runnable {
     private final ConsumerFlowController flowController;
     private final BroadcastProperties properties;
     private final BroadcastMetrics metrics;
+    private final RedisQueueDepthPublisher depthPublisher;
 
     DispatchWorker(
             PhoneNumberQueue queue,
@@ -49,7 +55,8 @@ public final class DispatchWorker implements Runnable {
             DispatchScheduler scheduler,
             ConsumerFlowController flowController,
             BroadcastProperties properties,
-            BroadcastMetrics metrics) {
+            BroadcastMetrics metrics,
+            RedisQueueDepthPublisher depthPublisher) {
         this.queue = queue;
         this.rateLimiter = rateLimiter;
         this.sendExecutor = sendExecutor;
@@ -57,6 +64,7 @@ public final class DispatchWorker implements Runnable {
         this.flowController = flowController;
         this.properties = properties;
         this.metrics = metrics;
+        this.depthPublisher = depthPublisher;
     }
 
     @Override
@@ -66,11 +74,23 @@ public final class DispatchWorker implements Runnable {
 
         try {
             while (!scheduler.isShuttingDown()) {
+                int pending = queue.pendingRecipients();
+
+                // Published before the token request rather than after the drain. Publishing after
+                // would report the depth the queue had once this pass's work was already handed
+                // out, which is systematically low by one chunk — and a systematically low depth
+                // is a standing invitation to the upstream credit loop to over-claim.
+                depthPublisher.publish(phoneNumberId, pending);
+
                 if (queue.isEmpty() && shouldExit()) {
+                    // Zero on the way out, so a drained number's key does not sit at its last
+                    // non-zero value until the TTL clears it. That gap would stall the upstream
+                    // claim for a number that is in fact idle.
+                    depthPublisher.publish(phoneNumberId, 0);
                     return;
                 }
 
-                int wanted = Math.min(properties.dispatch().chunkSize(), queue.pendingRecipients());
+                int wanted = Math.min(properties.dispatch().chunkSize(), pending);
                 if (wanted <= 0) {
                     continue;
                 }
@@ -83,8 +103,8 @@ public final class DispatchWorker implements Runnable {
 
                 List<PendingSend> sends = queue.drain(grant.granted());
                 for (PendingSend send : sends) {
-                    // Submitted and not awaited. The next token acquisition happens while these are
-                    // still in flight, which is what keeps the rate continuous.
+                    // Submitted and not awaited. The next token acquisition happens while these
+                    // are still in flight, which is what keeps the rate continuous.
                     sendExecutor.submit(send);
                 }
 
@@ -94,8 +114,8 @@ public final class DispatchWorker implements Runnable {
             log.error("Dispatch worker failed phoneNumberId={}", phoneNumberId, e);
         } finally {
             queue.forceStopWorker();
-            // Work may have arrived between the last check and releasing the flag. Nothing else will
-            // notice, so this worker restarts the queue itself.
+            // Work may have arrived between the last check and releasing the flag. Nothing else
+            // will notice, so this worker restarts the queue itself.
             if (!queue.isEmpty() && !scheduler.isShuttingDown()) {
                 scheduler.enqueueExistingQueue(queue);
             }
@@ -114,13 +134,12 @@ public final class DispatchWorker implements Runnable {
         if (queue.isEmpty()) {
             return true;
         }
-        // Something arrived. Take the flag back if nobody else has.
         return !queue.tryStartWorker();
     }
 
     private void sleepFor(long waitMicros, String phoneNumberId) {
-        long millis = Math.max(
-                DomainConstants.Dispatch.MIN_SLEEP_MILLIS, waitMicros / DomainConstants.Dispatch.MICROS_PER_MILLI);
+        long millis = Math.max(DomainConstants.Dispatch.MIN_SLEEP_MILLIS,
+                waitMicros / DomainConstants.Dispatch.MICROS_PER_MILLI);
         long capped = Math.min(millis, properties.dispatch().maxSleep().toMillis());
         metrics.rateLimitWait(phoneNumberId, Duration.ofMillis(capped));
         try {

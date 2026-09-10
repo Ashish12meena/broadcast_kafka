@@ -11,6 +11,11 @@ import java.util.List;
  * unchanged — only the transport differs. Three fields are added: {@code attempts}, {@code retryable}
  * and {@code sentAtMs}.
  *
+ * <p>{@code traceId} is echoed straight back from the {@code DispatchEvent} that produced this
+ * batch. It is what makes a single recipient followable from the campaign API call, through
+ * resolution and the claim, across both Kafka hops, to the counter that finally records the
+ * outcome. Nullable so the two services can be deployed in either order.
+ *
  * <p>{@code retryable} matters most. This service has already classified the Meta error code to
  * decide whether to retry, and re-deriving that decision on the receiving side would mean two copies
  * of the same catalog drifting apart. {@code errorCode} carries the rate-limit codes that let the
@@ -20,6 +25,7 @@ import java.util.List;
 public record ResultEvent(
         @JsonProperty("campaignId") Long campaignId,
         @JsonProperty("phoneNumberId") String phoneNumberId,
+        @JsonProperty("traceId") String traceId,
         @JsonProperty("results") List<ResultItem> results) {
 
     public record ResultItem(
