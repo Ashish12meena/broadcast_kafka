@@ -5,6 +5,7 @@ import com.aigreentick.services.broadcast.application.service.ingest.InFlightBat
 import com.aigreentick.services.broadcast.application.service.ingest.PendingSend;
 import com.aigreentick.services.broadcast.application.service.ingest.PhoneNumberQueue;
 import com.aigreentick.services.broadcast.infrastructure.observability.BroadcastMetrics;
+import com.aigreentick.services.broadcast.infrastructure.redis.RedisQueueDepthPublisher;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,14 +46,17 @@ public class DispatchScheduler {
     private final ExecutorService dispatchExecutor;
     private final DispatchWorkerFactory workerFactory;
     private final BroadcastMetrics metrics;
+    private final RedisQueueDepthPublisher depthPublisher;
 
     public DispatchScheduler(
             @Qualifier(InfraConstants.Executor.DISPATCH_EXECUTOR) ExecutorService dispatchExecutor,
             DispatchWorkerFactory workerFactory,
-            BroadcastMetrics metrics) {
+            BroadcastMetrics metrics,
+            RedisQueueDepthPublisher depthPublisher) {
         this.dispatchExecutor = dispatchExecutor;
         this.workerFactory = workerFactory;
         this.metrics = metrics;
+        this.depthPublisher = depthPublisher;
     }
 
     public void enqueue(InFlightBatch batch) {
@@ -122,6 +126,13 @@ public class DispatchScheduler {
         return (int) queues.values().stream().filter(queue -> !queue.isEmpty()).count();
     }
 
+    /**
+     * Depths for numbers with work outstanding, for the ops endpoint.
+     *
+     * <p>Omits the zeros deliberately: an operator asking what is in flight does not want a row per
+     * number that has nothing. Use {@link #allDepthsByPhoneNumber()} for anything that feeds the
+     * upstream credit loop, where the zeros carry meaning.
+     */
     public Map<String, Integer> depthByPhoneNumber() {
         Map<String, Integer> depths = new ConcurrentHashMap<>();
         queues.forEach((phoneNumberId, queue) -> {
@@ -133,19 +144,61 @@ public class DispatchScheduler {
         return depths;
     }
 
+    /**
+     * Every known number's depth, zeros included.
+     *
+     * <p>Separate from {@link #depthByPhoneNumber()} because the zeros are the point here. A number
+     * whose key is absent reads upstream as "I cannot see the queue", which correctly produces a
+     * conservative fallback claim. A number whose key says zero reads as "the queue is empty, send
+     * what you have". Those are opposite instructions, and publishing only the non-zero depths
+     * would silently turn every idle number into the first case.
+     */
+    public Map<String, Integer> allDepthsByPhoneNumber() {
+        Map<String, Integer> depths = new ConcurrentHashMap<>();
+        queues.forEach((phoneNumberId, queue) -> depths.put(phoneNumberId, queue.pendingRecipients()));
+        return depths;
+    }
+
     public boolean isShuttingDown() {
         return shuttingDown.get();
     }
 
-    /** Publishes queue depth and drops queues for numbers that have gone quiet. */
+    /**
+     * Publishes queue depth and drops queues for numbers that have gone quiet.
+     *
+     * <p>This javadoc used to be wrong. The method recorded a Micrometer gauge and evicted queues;
+     * it never touched the Redis depth key, so the only writer was {@code DispatchWorker}, which
+     * stops writing the instant it exits. An idle number's reading therefore expired and stayed
+     * expired, and the Messaging Service — polling a few seconds later — read nothing and fell back
+     * on every claim. Publishing here is what makes a reading survive a worker standing down.
+     */
     @Scheduled(fixedDelayString = InfraConstants.ConfigKeys.DISPATCH_HOUSEKEEPING_INTERVAL)
     public void housekeeping() {
         metrics.queueState(totalPendingRecipients(), activeNumbers());
+        refreshQueueDepths();
 
+        // Eviction runs after the refresh, never before: a queue dropped on this pass has already
+        // been published as zero, so the reader sees "empty" rather than the key's last non-zero
+        // value sitting there until the TTL clears it.
         queues.entrySet().removeIf(entry -> {
             PhoneNumberQueue queue = entry.getValue();
             return queue.isEmpty() && !queue.isWorkerActive();
         });
+    }
+
+    /**
+     * Rewrites every known number's depth key.
+     *
+     * <p>Failure is swallowed rather than propagated. Redis being unreachable costs the upstream
+     * credit loop a conservative claim; letting it abort this method would also skip the eviction
+     * sweep below and leak a queue object per number that has gone quiet.
+     */
+    private void refreshQueueDepths() {
+        try {
+            allDepthsByPhoneNumber().forEach(depthPublisher::publish);
+        } catch (RuntimeException e) {
+            log.warn("Queue depth refresh failed; readings will age out until the next pass", e);
+        }
     }
 
     /**

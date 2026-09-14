@@ -63,8 +63,30 @@ broadcast:
     # Far below the pause threshold on purpose, so the consumer does not oscillate.
     queue-resume-threshold: 5
     max-sleep: 200ms
+
+    # How long a published queue-depth reading survives in Redis.
+    #
+    # This used to be derived as max-sleep x 10 — two seconds. While a worker was looping it
+    # rewrote the key every pass, so nothing ever expired and the setting looked fine. The moment a
+    # worker drained its queue and exited, the key died two seconds later and nothing renewed it.
+    # The Messaging Service's next dispatch poll, arriving a few seconds afterwards, found no key,
+    # treated the depth as unknown, and claimed fallback-claim-size (200) instead of
+    # target-queue-depth minus depth (2000). The smaller batch drained faster, the worker exited
+    # sooner, and both services settled into a stable cycle in which the reading was guaranteed
+    # absent at the exact moment it was read. Campaign throughput sat at roughly a third of what
+    # the phone numbers could take, with no error logged on either side.
+    #
+    # Must exceed messaging.campaign.dispatch.depth-stale-after (30s), so freshness is judged by the
+    # timestamp embedded in the value — a check the reader already performs and never once reached.
+    depth-ttl: ${DEPTH_TTL:60s}
+
     shutdown-grace: 30s
-    housekeeping-interval: PT60S
+
+    # Refreshes every known number's depth key and evicts queues that have gone quiet. Was PT60S,
+    # when this only recorded a gauge; it is now the writer that keeps a reading alive for a number
+    # whose worker has stood down, so it has to run well inside depth-ttl. BroadcastProperties
+    # refuses to start if depth-ttl is less than four times this value.
+    housekeeping-interval: ${HOUSEKEEPING_INTERVAL:PT5S}
 
   rate-limit:
     # How much unused capacity a number may bank. Small: an idle number with a large burst spends it

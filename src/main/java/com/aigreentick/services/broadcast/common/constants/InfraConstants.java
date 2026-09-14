@@ -286,8 +286,17 @@ public final class InfraConstants {
 
         // ------------------------------------------------------------------ schedules
 
+        /**
+         * How often {@code DispatchScheduler.housekeeping()} runs.
+         *
+         * <p>Was {@code PT60S}, when that method only recorded a Micrometer gauge. It now also
+         * refreshes every known number's queue-depth key in Redis, which puts it on the critical
+         * path of the upstream credit loop: a minute between refreshes is longer than the reader's
+         * staleness window, so the reading it publishes would be rejected before the next one
+         * arrived.
+         */
         public static final String DISPATCH_HOUSEKEEPING_INTERVAL =
-                "${broadcast.dispatch.housekeeping-interval:PT60S}";
+                "${broadcast.dispatch.housekeeping-interval:PT5S}";
 
         // ------------------------------------------- keys quoted in validation messages
 

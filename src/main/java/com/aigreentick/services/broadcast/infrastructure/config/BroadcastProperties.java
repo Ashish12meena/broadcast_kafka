@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.config;
 
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -41,6 +42,28 @@ public record BroadcastProperties(
      *                                   below the pause threshold so the consumer does not oscillate
      * @param maxSleep                   longest a worker sleeps waiting for tokens before looking
      *                                   again, so capacity increases are picked up promptly
+     * @param depthTtl                   how long a published queue-depth reading survives in Redis.
+     *                                   <p>Explicit, and deliberately NOT derived from
+     *                                   {@code maxSleep}. It used to be {@code maxSleep x 10} —
+     *                                   two seconds — on the reasoning that this was "several times
+     *                                   the publish interval". {@code maxSleep} is not a publish
+     *                                   interval; it is how long a worker sleeps when the token
+     *                                   bucket denies it. While a worker loops it republishes on
+     *                                   every pass, so two seconds never expired. The moment a
+     *                                   worker drained its queue and exited, nothing renewed the
+     *                                   key, it vanished two seconds later, and the Messaging
+     *                                   Service's next poll found nothing. Every claim then fell
+     *                                   back to {@code fallback-claim-size}, which drained fast,
+     *                                   exited again, and locked both services into a cycle where
+     *                                   the reading was always absent exactly when it was read.
+     *                                   <p>Keep this comfortably longer than the reader's
+     *                                   {@code messaging.campaign.dispatch.depth-stale-after}, so
+     *                                   that staleness is decided by the timestamp embedded in the
+     *                                   value rather than by the key expiring. The reader already
+     *                                   has that check; a short TTL is what stopped it ever running
+     * @param housekeepingInterval       how often the scheduler refreshes every known number's
+     *                                   depth key and evicts queues that have gone quiet. Must stay
+     *                                   well below {@code depthTtl}
      */
     public record Dispatch(
             @Min(1) int chunkSize,
@@ -48,8 +71,34 @@ public record BroadcastProperties(
             @Min(1) int maxQueuedBatchesPerNumber,
             @Min(1) int queueResumeThreshold,
             Duration maxSleep,
+            Duration depthTtl,
             Duration shutdownGrace,
             Duration housekeepingInterval) {
+
+        /**
+         * Defaults {@code depthTtl} so a profile that replaces the whole {@code dispatch} block
+         * cannot silently reintroduce a short-lived key.
+         */
+        public Dispatch {
+            depthTtl = depthTtl == null ? DEFAULT_DEPTH_TTL : depthTtl;
+        }
+
+        private static final Duration DEFAULT_DEPTH_TTL = Duration.ofSeconds(60);
+
+        /**
+         * Refuses to start on the combination that caused the original fault: a TTL short enough
+         * that a key can expire between two refreshes. Four times is arbitrary but generous; the
+         * point is that the failure is a startup error rather than a throughput number nobody can
+         * explain.
+         */
+        @AssertTrue(message = "broadcast.dispatch.depth-ttl must be at least 4x "
+                + "broadcast.dispatch.housekeeping-interval, or a number's queue-depth key expires "
+                + "between refreshes and the Messaging Service falls back to fallback-claim-size "
+                + "on every claim")
+        public boolean isDepthTtlAboveRefreshInterval() {
+            return housekeepingInterval == null
+                    || depthTtl.compareTo(housekeepingInterval.multipliedBy(4)) >= 0;
+        }
     }
 
     /**

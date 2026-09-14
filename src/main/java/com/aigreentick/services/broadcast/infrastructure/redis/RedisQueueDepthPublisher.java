@@ -28,6 +28,17 @@ import java.time.Instant;
  * The TTL is what makes a dead publisher safe: its key disappears, the reader sees nothing, and the
  * reader falls back to a deliberately modest fixed claim. A key with no TTL would leave a stale
  * depth behind forever, and a stale low depth is an instruction to flood.
+ *
+ * <h2>Two writers, on purpose</h2>
+ * {@code DispatchWorker} publishes on every pass, which keeps the reading within one iteration of
+ * the truth while a number is actively draining. {@code DispatchScheduler.housekeeping()} publishes
+ * every known number on a fixed interval, which keeps a reading alive for a number whose worker has
+ * stood down.
+ *
+ * <p>The second writer is not redundant. With only the first, an idle number's key expired and was
+ * never rewritten, so the reader saw "unknown" rather than "empty" — and those are opposite
+ * instructions. "Unknown" produces a conservative fallback claim; "empty" produces a full one. The
+ * whole credit loop turns on that distinction.
  */
 @Component
 public class RedisQueueDepthPublisher {
@@ -42,10 +53,21 @@ public class RedisQueueDepthPublisher {
 
     public RedisQueueDepthPublisher(StringRedisTemplate redis, BroadcastProperties properties) {
         this.redis = redis;
-        // Several times the publish interval, so an ordinary GC pause does not blank the reading
-        // and cause an unnecessary fallback, while a genuinely dead pod's key still expires within
-        // a poll or two.
-        this.ttl = properties.dispatch().maxSleep().multipliedBy(10);
+        // Configured, not derived.
+        //
+        // This was maxSleep x 10, justified as "several times the publish interval". maxSleep is
+        // not a publish interval — it is the cap on how long a worker sleeps when the token bucket
+        // denies it — and at the shipped 200ms that produced a two-second TTL. While a worker
+        // loops it rewrites this key every pass, so two seconds never expired and the fault was
+        // invisible. The moment a worker drained its queue and exited, the key died two seconds
+        // later and nothing renewed it, so the Messaging Service's poll a few seconds afterwards
+        // read nothing at all and claimed fallback-claim-size instead of consulting the credit
+        // loop. That produced a smaller batch, which drained faster, which exited sooner.
+        //
+        // Now derived from nothing: it is a property, and the properties record refuses to start
+        // if it is short relative to the refresh interval.
+        this.ttl = properties.dispatch().depthTtl();
+        log.info("Queue depth publisher initialised with ttl={}", this.ttl);
     }
 
     /**
