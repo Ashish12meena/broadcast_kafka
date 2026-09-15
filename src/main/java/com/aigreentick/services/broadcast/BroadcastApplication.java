@@ -20,7 +20,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 @EnableConfigurationProperties(BroadcastProperties.class)
 public class BroadcastApplication {
-
     public static void main(String[] args) {
         SpringApplication.run(BroadcastApplication.class, args);
     }
