@@ -278,6 +278,31 @@ public final class InfraConstants {
         public static final String KAFKA_BOOTSTRAP_SERVERS = "${spring.kafka.bootstrap-servers}";
         public static final String KAFKA_CONSUMER_GROUP_ID = "${spring.kafka.consumer.group-id:broadcast-service}";
         public static final String KAFKA_MAX_POLL_RECORDS = "${spring.kafka.consumer.max-poll-records:100}";
+
+        /**
+         * Largest record this consumer will fetch from one partition.
+         *
+         * <p>Must sit at or above the outbound topic's {@code max.message.bytes} (12 MB) and above
+         * the Messaging Service's producer {@code max.request.size} (10 MB). Kafka's 1 MB default
+         * is smaller than a 2,000-recipient dispatch batch, and a record the broker accepted but
+         * this consumer cannot fetch does not raise an error: the partition stalls, the consumer
+         * retries the same fetch indefinitely, and nothing in the log names the cause.
+         *
+         * <p>Raise this in step with the producer, and raise it first. Producer before consumer
+         * puts records on the broker that no consumer can read.
+         */
+        public static final String KAFKA_MAX_PARTITION_FETCH_BYTES =
+                "${spring.kafka.consumer.max-partition-fetch-bytes:12582912}";
+
+        /**
+         * Ceiling on a whole fetch response across all assigned partitions.
+         *
+         * <p>Three times the per-partition limit, so a fetch spanning several partitions is not
+         * throttled below it. At a dispatch concurrency of six this bounds fetch buffers at roughly
+         * 72 MB for this consumer; check the heap before raising either value.
+         */
+        public static final String KAFKA_FETCH_MAX_BYTES =
+                "${spring.kafka.consumer.fetch-max-bytes:37748736}";
         public static final String KAFKA_DISPATCH_CONCURRENCY = "${broadcast.kafka.dispatch-concurrency:6}";
 
         /** Guards topic auto-creation, which is off outside local development. */

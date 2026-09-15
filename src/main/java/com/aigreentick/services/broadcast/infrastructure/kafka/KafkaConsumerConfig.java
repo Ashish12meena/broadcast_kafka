@@ -22,6 +22,26 @@ import java.util.Map;
  * acknowledgement, since an offset may only move once every recipient in the batch is resolved.
  * Capacity is a compacted stream of current values where automatic acknowledgement is right and
  * replaying from the beginning on every start is exactly what is wanted.
+ *
+ * <h2>These factories are hand-built, so {@code spring.kafka.consumer.*} is ignored</h2>
+ * Declaring {@link ConsumerFactory} beans makes Spring Boot back off its auto-configured one and
+ * every property under {@code spring.kafka.consumer} with it. The group id and poll size in
+ * {@code application.yml} reach this class only because {@link InfraConstants.ConfigKeys} reads
+ * them through {@code @Value} and they are put into the map below by hand. Any other consumer
+ * setting added to that YAML block does nothing at all.
+ *
+ * <h2>Fetch size has to track the producer's record size</h2>
+ * A dispatch batch of 2,000 recipients is around 1.26 MB and the Messaging Service now sends up to
+ * {@code max.request.size} of 10 MB. {@code max.partition.fetch.bytes} defaults to 1 MB, and a
+ * record the broker accepted but a consumer cannot fetch does not fail — it stalls that partition
+ * permanently, with the consumer retrying the same fetch forever and no error that names the
+ * cause. That is a worse outcome than the rejected send it replaces, which is why this value must
+ * be raised whenever the producer's is, and why it sits at or above the topic's
+ * {@code max.message.bytes} rather than merely above today's observed batch.
+ *
+ * <p>The two fetch sizes are therefore read from {@code spring.kafka.consumer.*} through
+ * {@link InfraConstants.ConfigKeys}, the same per-key {@code @Value} route the group id and poll
+ * size already use, so they can be retuned alongside the producer without a rebuild.
  */
 @EnableKafka
 @Configuration
@@ -38,6 +58,12 @@ public class KafkaConsumerConfig {
 
     @Value(InfraConstants.ConfigKeys.KAFKA_DISPATCH_CONCURRENCY)
     private int dispatchConcurrency;
+
+    @Value(InfraConstants.ConfigKeys.KAFKA_MAX_PARTITION_FETCH_BYTES)
+    private int maxPartitionFetchBytes;
+
+    @Value(InfraConstants.ConfigKeys.KAFKA_FETCH_MAX_BYTES)
+    private int fetchMaxBytes;
 
     @Bean
     public ConsumerFactory<String, String> dispatchConsumerFactory() {
@@ -95,6 +121,11 @@ public class KafkaConsumerConfig {
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         config.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, InfraConstants.Kafka.FETCH_MAX_WAIT_MS);
+
+        // Must stay at or above the outbound topic's max.message.bytes. See the class javadoc: a
+        // record too large to fetch stalls its partition silently rather than failing.
+        config.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, maxPartitionFetchBytes);
+        config.put(ConsumerConfig.FETCH_MAX_BYTES_CONFIG, fetchMaxBytes);
         return config;
     }
 }
