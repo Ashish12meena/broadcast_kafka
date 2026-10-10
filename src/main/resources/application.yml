@@ -2,6 +2,15 @@ spring:
   application:
     name: broadcast-service
 
+  # Platform configuration standard (docs/configuration): shared infrastructure addresses come from
+  # ../platform.env, this service's own settings and secrets from ./.env (the later import wins).
+  # Real environment variables override both. Imported here, not in a profile file, so it applies to
+  # every profile.
+  config:
+    import:
+      - optional:file:${APARGO_PLATFORM_ENV:../platform.env}[.properties]
+      - optional:file:./.env[.properties]
+
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:test}
 
@@ -17,7 +26,7 @@ spring:
     # by Spring Boot. Each key below reaches the code only because InfraConstants.ConfigKeys pulls
     # it in by name through @Value. Adding any other key here does nothing.
     consumer:
-      group-id: ${KAFKA_GROUP_ID:broadcast-service}
+      group-id: ${KAFKA_CONSUMER_GROUP:${KAFKA_GROUP_ID:broadcast-service}}
       max-poll-records: 100
 
       # Must be at or above the outbound topic's max.message.bytes (12 MB) and above the Messaging
@@ -49,10 +58,10 @@ spring:
   lifecycle:
     # Must exceed broadcast.dispatch.shutdown-grace, or the platform kills the pod while it is still
     # draining and the in-flight sends are lost with no outcome recorded.
-    timeout-per-shutdown-phase: 45s
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:45s}
 
 server:
-  port: ${SERVER_PORT:8060}
+  port: ${SERVER_PORT:${BROADCAST_SERVICE_PORT:8060}}
   shutdown: graceful
 
 broadcast:
@@ -96,7 +105,7 @@ broadcast:
     upgrade-backoff: 90s
 
   meta:
-    base-url: ${META_BASE_URL:https://graph.facebook.com/v23.0}
+    base-url: ${META_BASE_URL:${META_GRAPH_BASE_URL:https://graph.facebook.com}/${META_GRAPH_API_VERSION:v23.0}}
     connect-timeout: 3s
     read-timeout: 15s
     # Explicit on purpose. Reactor Netty defaults to max(cores, 8) x 2 — sixteen on a four-core pod —
@@ -130,9 +139,10 @@ eureka:
   client:
     enabled: ${EUREKA_ENABLED:true}
     service-url:
-      defaultZone: ${EUREKA_SERVER_URL:http://146.88.24.113:8761/eureka}
+      # EUREKA_DEFAULT_ZONE is the platform-wide name; EUREKA_SERVER_URL is still honoured.
+      defaultZone: ${EUREKA_DEFAULT_ZONE:${EUREKA_SERVER_URL:http://146.88.24.113:8761/eureka}}
   instance:
-    prefer-ip-address: true
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:true}
     instance-id: ${spring.application.name}:${server.port}
 
 management:
@@ -141,18 +151,18 @@ management:
   # denial-of-service vector, because one request setting the service to TRACE is enough to drown
   # the dispatch loop in its own output.
   server:
-    port: 9090
+    port: ${MANAGEMENT_SERVER_PORT:${BROADCAST_MANAGEMENT_PORT:9090}}
   endpoints:
     web:
       exposure:
         # loggers added so a level can be changed on a running pod without a redeploy. Redeploying
         # to raise a log level restarts the pod and destroys the state being investigated.
-        include: health,info,prometheus,metrics,loggers
+        include: ${MANAGEMENT_ENDPOINTS:health,info,prometheus,metrics,loggers}
   endpoint:
     health:
       probes:
         enabled: true
-      show-details: always
+      show-details: ${MANAGEMENT_HEALTH_DETAILS:always}
   health:
     # Readiness only. A Redis outage puts the service on conservative local rates, which is degraded
     # but working — restarting pods over it would turn a cache problem into an outage.
@@ -164,8 +174,8 @@ management:
 
 logging:
   level:
-    com.aigreentick.services.broadcast: OFF
-    org.apache.kafka: OFF
+    com.aigreentick.services.broadcast: ${LOG_LEVEL_APP:OFF}
+    org.apache.kafka: ${LOG_LEVEL_KAFKA:OFF}
 
     # The Redis classes fall back to local behaviour rather than failing, and now report that as a
     # transition plus a counter rather than per call. Kept at INFO so the recovery line is visible;

@@ -1,5 +1,9 @@
 HELP.md
+
+### Environment — .env holds real values and is never committed; .env.example is the template ###
 .env
+.env.*
+!.env.example
 
 target/
 .mvn/wrapper/maven-wrapper.jar

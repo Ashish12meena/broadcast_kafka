@@ -1,7 +1,5 @@
 spring:
-  config:
-    import: optional:file:.env[.properties]
-
+  # .env and ../platform.env are imported by application.yml for every profile.
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
@@ -12,7 +10,7 @@ spring:
       password: ${REDIS_PASSWORD:}
 
 server:
-  port: ${SERVER_PORT:8060}
+  port: ${SERVER_PORT:${BROADCAST_SERVICE_PORT:8060}}
 
 broadcast:
   kafka:
@@ -23,7 +21,7 @@ broadcast:
     max-concurrent-sends: 16
 
   meta:
-    base-url: ${META_BASE_URL:https://graph.facebook.com/v23.0}
+    base-url: ${META_BASE_URL:${META_GRAPH_BASE_URL:https://graph.facebook.com}/${META_GRAPH_API_VERSION:v23.0}}
     max-connections: 16
 
   rate-limit:
@@ -33,8 +31,8 @@ eureka:
   client:
     enabled: ${EUREKA_ENABLED:false}
     service-url:
-      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka}
+      defaultZone: ${EUREKA_DEFAULT_ZONE:${EUREKA_SERVER_URL:http://localhost:8761/eureka}}
 
 logging:
   level:
-    com.aigreentick.services.broadcast: DEBUG
+    com.aigreentick.services.broadcast: ${LOG_LEVEL_APP:DEBUG}

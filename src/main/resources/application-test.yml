@@ -23,7 +23,8 @@ broadcast:
     # Absolute URL that receives the simulated status callbacks — normally the same webhook endpoint
     # Meta posts to in production. Left blank, sends are still simulated, one warning is logged, and
     # no statuses are posted.
-    callback-url: ${SIM_CALLBACK_URL:http://146.88.24.113:8090/api/v1/webhook}
+    # SIM_CALLBACK_URL wins; otherwise built from the platform's WEBHOOK_SERVICE_URL.
+    callback-url: ${SIM_CALLBACK_URL:${WEBHOOK_SERVICE_URL:http://146.88.24.113:8090}/api/v1/webhook}
 
     # Optional, for a receiver behind a verification token or an internal API key.
     # headers:
@@ -54,9 +55,9 @@ broadcast:
 
 eureka:
   client:
-    enabled: false
+    enabled: ${EUREKA_ENABLED:false}
 
 logging:
   level:
-    com.aigreentick.services.broadcast: OFF
+    com.aigreentick.services.broadcast: ${LOG_LEVEL_APP:OFF}
     com.aigreentick.services.broadcast.infrastructure.meta.simulator: OFF

@@ -22,4 +22,4 @@ broadcast:
 
 logging:
   level:
-    com.aigreentick.services.broadcast: INFO
+    com.aigreentick.services.broadcast: ${LOG_LEVEL_APP:INFO}
