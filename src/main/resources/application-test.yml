@@ -1,22 +1,15 @@
 # Simulate Meta response and callback by this profile
 
-spring:
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:146.88.24.113:9092}
-  data:
-    redis:
-      host: ${REDIS_HOST:146.88.24.113}
-
 broadcast:
   kafka:
     auto-create-topics: true
-    dispatch-concurrency: 2
+    dispatch-concurrency: ${KAFKA_DISPATCH_CONCURRENCY:2}
 
   dispatch:
     max-concurrent-sends: 16
 
   rate-limit:
-    assumed-instances: 1
+    assumed-instances: ${ASSUMED_INSTANCES:1}
 
   simulator:
     # >>> SUPPLY THIS <<<
@@ -59,5 +52,4 @@ eureka:
 
 logging:
   level:
-    com.aigreentick.services.broadcast: ${LOG_LEVEL_APP:OFF}
     com.aigreentick.services.broadcast.infrastructure.meta.simulator: OFF

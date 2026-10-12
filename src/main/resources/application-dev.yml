@@ -1,37 +1,27 @@
 spring:
   # .env and ../platform.env are imported by application.yml for every profile.
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
-
-server:
-  port: ${SERVER_PORT:${BROADCAST_SERVICE_PORT:8060}}
 
 broadcast:
   kafka:
     auto-create-topics: true
-    dispatch-concurrency: 2
+    dispatch-concurrency: ${KAFKA_DISPATCH_CONCURRENCY:2}
 
   dispatch:
     max-concurrent-sends: 16
 
   meta:
-    base-url: ${META_BASE_URL:${META_GRAPH_BASE_URL:https://graph.facebook.com}/${META_GRAPH_API_VERSION:v23.0}}
     max-connections: 16
 
   rate-limit:
-    assumed-instances: 1
+    assumed-instances: ${ASSUMED_INSTANCES:1}
 
 eureka:
   client:
     enabled: ${EUREKA_ENABLED:false}
-    service-url:
-      defaultZone: ${EUREKA_DEFAULT_ZONE:${EUREKA_SERVER_URL:http://localhost:8761/eureka}}
 
 logging:
   level:
