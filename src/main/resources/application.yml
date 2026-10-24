@@ -127,9 +127,10 @@ broadcast:
 
   idempotency:
     enabled: true
-    # Must comfortably exceed the Messaging Service's processing timeout, or a claim expires before
-    # the redelivery it exists to guard against.
-    claim-ttl: 10m
+    # Must comfortably exceed the Messaging Service's processing timeout (10m), or a claim expires
+    # before the redelivery it exists to guard against. It used to equal it, so any backlog over
+    # ten minutes was re-published by Messaging and sent twice.
+    claim-ttl: ${BROADCAST_IDEMPOTENCY_CLAIM_TTL:30m}
 
   results:
     flush-size: 200

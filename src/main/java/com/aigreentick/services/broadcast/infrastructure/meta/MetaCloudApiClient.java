@@ -15,6 +15,11 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import javax.net.ssl.SSLHandshakeException;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.UnknownHostException;
+
 /**
  * Sends one message to Meta's Cloud API.
  *
@@ -78,15 +83,45 @@ public class MetaCloudApiClient implements MetaSendPort {
                     DomainConstants.Messages.META_RETURNED_STATUS_FORMAT.formatted(e.getStatusCode().value()));
 
         } catch (WebClientRequestException e) {
-            // Meta could not be reached: connection refused, DNS, pool exhaustion, timeout. This is
-            // the only class of failure that should influence the circuit breaker.
-            log.warn("Meta unreachable phoneNumberId={} reason={}", phoneNumberId, e.getMessage());
-            return SendResponse.unreachable(e.getMessage());
+            // A transport failure, the only class that should influence the circuit breaker. Which
+            // side of the request it happened on decides whether a retry is safe.
+            if (failedBeforeRequestWasSent(e)) {
+                // Connection refused, DNS, TLS handshake, pool exhaustion: nothing reached Meta.
+                log.warn("Meta unreachable phoneNumberId={} reason={}", phoneNumberId, e.getMessage());
+                return SendResponse.unreachable(e.getMessage());
+            }
+            // Connected, then no answer: read timeout, connection closed mid-response. Meta may
+            // have accepted the message, and it has no idempotency key, so this must not be retried.
+            log.warn("Meta send outcome unknown phoneNumberId={} reason={}", phoneNumberId, e.getMessage());
+            return SendResponse.outcomeUnknown(e.getMessage());
 
         } catch (RuntimeException e) {
             log.error("Unexpected failure calling Meta phoneNumberId={}", phoneNumberId, e);
             return SendResponse.unreachable(e.getClass().getSimpleName() + ": " + e.getMessage());
         }
+    }
+
+    /**
+     * Whether the failure happened before any byte of the request left: connecting, resolving,
+     * the TLS handshake, or waiting for a pooled connection. Anything else is treated as sent.
+     */
+    static boolean failedBeforeRequestWasSent(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause()) {
+            // ConnectException covers Netty's ConnectTimeoutException, which extends it.
+            if (t instanceof ConnectException || t instanceof UnknownHostException
+                    || t instanceof NoRouteToHostException || t instanceof SSLHandshakeException) {
+                return true;
+            }
+            // Reactor Netty shades reactor-pool, so its acquire failures are matched by name.
+            String name = t.getClass().getSimpleName();
+            if (name.equals("PoolAcquireTimeoutException") || name.equals("PoolAcquirePendingLimitException")) {
+                return true;
+            }
+            if (t.getCause() == t) {
+                break;
+            }
+        }
+        return false;
     }
 
     private static String truncate(String body) {

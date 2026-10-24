@@ -11,6 +11,8 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -47,6 +49,9 @@ import java.util.Map;
 @Configuration
 public class KafkaConsumerConfig {
 
+    /** Pause between attempts to dead-letter a record while the broker refuses the write. */
+    private static final long DEAD_LETTER_RETRY_INTERVAL_MS = 5_000L;
+
     @Value(InfraConstants.ConfigKeys.KAFKA_BOOTSTRAP_SERVERS)
     private String bootstrapServers;
 
@@ -82,6 +87,17 @@ public class KafkaConsumerConfig {
         // The offset moves only when the batch is fully resolved, which happens on another thread
         // long after the listener method returns.
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+
+        // Batches finish in any order. Without async acks, acknowledging offset 12 before 11
+        // commits past 11, and a crash then skips it for good. With them, the container holds the
+        // commit until every lower offset is acknowledged.
+        factory.getContainerProperties().setAsyncAcks(true);
+
+        // The listener handles every failure itself; the one that escapes is the dead letter topic
+        // being unwritable. Retry it until the broker is back rather than skipping the record after
+        // the default ten attempts.
+        factory.setCommonErrorHandler(new DefaultErrorHandler(
+                new FixedBackOff(DEAD_LETTER_RETRY_INTERVAL_MS, FixedBackOff.UNLIMITED_ATTEMPTS)));
 
         // Should match the partition count of the outbound topic.
         factory.setConcurrency(dispatchConcurrency);

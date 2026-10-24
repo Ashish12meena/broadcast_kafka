@@ -19,6 +19,20 @@ public interface IdempotencyPort {
     void confirm(Long recipientId, String providerMessageId);
 
     /**
+     * Marks the recipient as finished with a failure that must not be re-sent, recording its error
+     * code against the claim so a redelivery reports the same failure.
+     */
+    void confirmFailed(Long recipientId, String errorCode);
+
+    /**
+     * The error code {@link #confirmFailed} stored against an existing claim, if there is one.
+     *
+     * @return the code, or null when the claim holds no failure, has expired, or the store is
+     *         unreachable
+     */
+    String claimedFailure(Long recipientId);
+
+    /**
      * The provider message id stored against an existing claim, if there is one.
      *
      * <p>Exists so a suppressed duplicate can still report an outcome. Without it the only honest

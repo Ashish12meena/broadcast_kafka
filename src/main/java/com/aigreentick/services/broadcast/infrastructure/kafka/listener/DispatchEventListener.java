@@ -93,6 +93,10 @@ public class DispatchEventListener {
 
             dispatchBatch.accept(toDomain(event), acknowledgment::acknowledge);
 
+        } catch (DeadLetterUnavailableException e) {
+            // Not a problem with the message: rethrown so the container retries it, rather than
+            // dead-lettering it a second time under the wrong reason.
+            throw e;
         } catch (Exception e) {
             sendToDeadLetter(rawMessage,
                     DomainConstants.Messages.DESERIALIZATION_FAILED_PREFIX + e.getMessage(),
@@ -127,13 +131,22 @@ public class DispatchEventListener {
         // Reason only. The raw message is a recipient list and belongs on the dead letter topic,
         // not in the log aggregator.
         log.error("Dispatch event rejected, sending to dead letter topic: {}", reason);
-        try {
-            deadLetter.send(rawMessage, reason,
-                    InfraConstants.Kafka.SOURCE_TOPIC_OUTBOUND_MESSAGES, partition, offset);
-        } finally {
+        boolean published = deadLetter.send(rawMessage, reason,
+                InfraConstants.Kafka.SOURCE_TOPIC_OUTBOUND_MESSAGES, partition, offset);
+        if (!published) {
             // Acknowledged only after the dead letter is safely away, so a broker failure leaves
-            // the message on the source topic rather than losing it from both.
-            acknowledgment.acknowledge();
+            // the message on the source topic rather than losing it from both. This used to sit in
+            // a finally block, which acknowledged it even when the write had failed.
+            throw new DeadLetterUnavailableException(
+                    "Could not dead-letter offset %d of partition %d; retrying".formatted(offset, partition));
+        }
+        acknowledgment.acknowledge();
+    }
+
+    /** The dead letter topic could not take the record; the container's error handler retries it. */
+    static final class DeadLetterUnavailableException extends RuntimeException {
+        DeadLetterUnavailableException(String message) {
+            super(message);
         }
     }
 }

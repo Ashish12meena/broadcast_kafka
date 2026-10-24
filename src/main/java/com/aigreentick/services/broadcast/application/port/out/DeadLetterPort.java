@@ -8,5 +8,9 @@ package com.aigreentick.services.broadcast.application.port.out;
  */
 public interface DeadLetterPort {
 
-    void send(String rawPayload, String reason, String sourceTopic, int partition, long offset);
+    /**
+     * @return true once the broker has the message; false if it could not be written, in which
+     *         case the caller must not acknowledge the source record
+     */
+    boolean send(String rawPayload, String reason, String sourceTopic, int partition, long offset);
 }

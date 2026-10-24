@@ -91,8 +91,30 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
         try {
             String value = redis.opsForValue().get(RedisKeys.sentClaim(recipientId));
             // The bare marker means the claim was taken but confirm() never ran — an in-flight
-            // send, or one that failed before it got a wamid. Either way there is no id to report.
-            return InfraConstants.Redis.CLAIM_MARKER.equals(value) ? null : value;
+            // send, or one that failed before it got a wamid. A failure marker holds an error
+            // code, not a wamid. Either way there is no id to report.
+            if (value == null || InfraConstants.Redis.CLAIM_MARKER.equals(value)
+                    || value.startsWith(InfraConstants.Redis.CLAIM_FAILED_PREFIX)) {
+                return null;
+            }
+            return value;
+
+        } catch (DataAccessException e) {
+            log.debug("Could not read claim recipientId={} reason={}", recipientId, e.toString());
+            return null;
+        }
+    }
+
+    @Override
+    public String claimedFailure(Long recipientId) {
+        if (!properties.idempotency().enabled() || recipientId == null) {
+            return null;
+        }
+        try {
+            String value = redis.opsForValue().get(RedisKeys.sentClaim(recipientId));
+            return value != null && value.startsWith(InfraConstants.Redis.CLAIM_FAILED_PREFIX)
+                    ? value.substring(InfraConstants.Redis.CLAIM_FAILED_PREFIX.length())
+                    : null;
 
         } catch (DataAccessException e) {
             log.debug("Could not read claim recipientId={} reason={}", recipientId, e.toString());
@@ -110,6 +132,19 @@ public class RedisIdempotencyGuard implements IdempotencyPort {
                     RedisKeys.sentClaim(recipientId), providerMessageId, properties.idempotency().claimTtl());
         } catch (DataAccessException e) {
             log.debug("Could not confirm claim recipientId={} reason={}", recipientId, e.toString());
+        }
+    }
+
+    @Override
+    public void confirmFailed(Long recipientId, String errorCode) {
+        if (!properties.idempotency().enabled() || recipientId == null) {
+            return;
+        }
+        try {
+            redis.opsForValue().set(RedisKeys.sentClaim(recipientId),
+                    InfraConstants.Redis.CLAIM_FAILED_PREFIX + errorCode, properties.idempotency().claimTtl());
+        } catch (DataAccessException e) {
+            log.debug("Could not record failed claim recipientId={} reason={}", recipientId, e.toString());
         }
     }
 

@@ -43,7 +43,7 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
     }
 
     @Override
-    public void send(String rawPayload, String reason, String sourceTopic, int partition, long offset) {
+    public boolean send(String rawPayload, String reason, String sourceTopic, int partition, long offset) {
         ProducerRecord<String, String> record = new ProducerRecord<>(
                 properties.topics().deadLetter(), null, rawPayload);
 
@@ -61,10 +61,12 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
             metrics.deadLettered(shortReason(reason));
             log.warn("Dead-lettered a message from {}-{} offset {}: {}",
                     sourceTopic, partition, offset, reason);
+            return true;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Interrupted while dead-lettering a message", e);
+            return false;
         } catch (Exception e) {
             // Nowhere left to put it, but the payload still does not go in the log: it is a list of
             // recipients, and every one is a phone number belonging to a real person. The message is
@@ -75,6 +77,7 @@ public class DeadLetterEventPublisher implements DeadLetterPort {
                     sourceTopic, partition, offset,
                     LogSafe.fingerprint(rawPayload),
                     rawPayload == null ? 0 : rawPayload.length(), e);
+            return false;
         }
     }
 

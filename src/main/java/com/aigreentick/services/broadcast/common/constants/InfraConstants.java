@@ -172,6 +172,13 @@ public final class InfraConstants {
          */
         public static final String CLAIM_MARKER = "CLAIMED";
 
+        /**
+         * Prefix of the value written when a claimed send ended in a failure that must not be
+         * re-sent, followed by its error code. A redelivery then reports the same failure instead of
+         * a success with no wamid.
+         */
+        public static final String CLAIM_FAILED_PREFIX = "FAILED:";
+
         /** The degrade lock carries no information; only its presence matters. */
         public static final String DEGRADE_LOCK_VALUE = "1";
 

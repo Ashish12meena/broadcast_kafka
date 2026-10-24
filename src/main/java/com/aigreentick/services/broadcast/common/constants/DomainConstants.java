@@ -156,6 +156,12 @@ public final class DomainConstants {
 
         /** Meta answered but supplied no code. */
         public static final String UNKNOWN = "UNKNOWN";
+
+        /**
+         * The request reached Meta but no answer came back. It may have been delivered, so it is
+         * reported failed and never re-sent.
+         */
+        public static final String OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN";
     }
 
     /**
@@ -189,6 +195,10 @@ public final class DomainConstants {
         public static final String CIRCUIT_OPEN = "Circuit open for this phone number";
         public static final String SEND_INTERRUPTED = "Send interrupted during shutdown";
         public static final String EMPTY_META_RESPONSE = "Empty response from Meta";
+        public static final String PRIOR_DELIVERY_FAILED =
+                "Failed on an earlier delivery of this batch; not re-sent";
+        public static final String OUTCOME_UNKNOWN_PREFIX =
+                "No answer from Meta after the request was sent; not re-sent to avoid a duplicate: ";
         public static final String META_RETURNED_NOTHING_USABLE =
                 "Meta returned neither a message nor an error";
 

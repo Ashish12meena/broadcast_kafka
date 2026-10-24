@@ -136,6 +136,14 @@ public class SendExecutor {
                 // ever arriving, which the stuck sweep eventually released and re-sent — producing
                 // the exact duplicate this guard exists to prevent, by way of the guard.
                 metrics.duplicateSuppressed(phoneNumberId);
+                String priorFailure = idempotency.claimedFailure(recipient.recipientId());
+                if (priorFailure != null) {
+                    // The earlier delivery ended in a failure that must not be re-sent. Reporting it
+                    // as accepted would turn a failed message into a success with no wamid.
+                    resolve(send, RecipientOutcome.failed(recipient, priorFailure,
+                            DomainConstants.Messages.PRIOR_DELIVERY_FAILED, false, send.attempts()));
+                    return;
+                }
                 String priorMessageId = idempotency.claimedMessageId(recipient.recipientId());
                 // DEBUG, not INFO: rare in steady state, but a consumer rebalance redelivers the
                 // whole batch and this then fires once per recipient — thousands of lines at the
@@ -221,6 +229,20 @@ public class SendExecutor {
             return;
         }
 
+        if (response.outcomeUnknown()) {
+            // The request reached Meta and no answer came back, so the customer may already have
+            // the message. Retrying risks a second copy; reporting it failed does not. The claim
+            // keeps the failure so a redelivery reports the same thing.
+            String code = DomainConstants.ErrorCodes.OUTCOME_UNKNOWN;
+            metrics.sendResult(phoneNumberId, false, code);
+            log.warn("Meta send outcome unknown recipientId={} reason={}",
+                    recipient.recipientId(), response.errorMessage());
+            idempotency.confirmFailed(recipient.recipientId(), code);
+            resolve(send, RecipientOutcome.failed(recipient, code,
+                    DomainConstants.Messages.OUTCOME_UNKNOWN_PREFIX + response.errorMessage(), false, attempt));
+            return;
+        }
+
         MetaErrorClass errorClass = response.transportFailure()
                 ? MetaErrorClass.TRANSIENT
                 : MetaErrorCatalog.classify(response.errorCode());
@@ -265,7 +287,9 @@ public class SendExecutor {
                         response.errorMessage(), true, attempt));
             }
             case PERMANENT -> {
-                idempotency.confirm(recipient.recipientId(), null);
+                // confirm(id, null) was a no-op, which left the bare marker and made a redelivery
+                // report this failure as a success with no wamid.
+                idempotency.confirmFailed(recipient.recipientId(), errorCode);
                 resolve(send, RecipientOutcome.failed(recipient, errorCode,
                         response.errorMessage(), false, attempt));
             }
