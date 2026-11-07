@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.application.service.ingest;
 
 import com.aigreentick.services.broadcast.domain.model.DispatchBatch;
+import com.aigreentick.services.broadcast.domain.model.SendCredential;
 import com.aigreentick.services.broadcast.domain.model.Recipient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -58,7 +59,7 @@ class PhoneNumberQueueTest {
         // early discards the recipients that were never sent.
         boolean[] completed = {false};
         InFlightBatch inFlight = new InFlightBatch(
-                new DispatchBatch(1L, PHONE_NUMBER_ID, 10L, "token", "01TESTTRACE0000000000000A", recipients(3)),
+                new DispatchBatch(1L, PHONE_NUMBER_ID, 10L, SendCredential.meta("token"), "01TESTTRACE0000000000000A", recipients(3)),
                 () -> completed[0] = true);
 
         assertThat(inFlight.recordResolved()).isFalse();
@@ -88,7 +89,7 @@ class PhoneNumberQueueTest {
 
     private static InFlightBatch batch(long campaignId, int size) {
         return new InFlightBatch(
-                new DispatchBatch(campaignId, PHONE_NUMBER_ID, 10L, "token", "01TESTTRACE0000000000000A", recipients(size)),
+                new DispatchBatch(campaignId, PHONE_NUMBER_ID, 10L, SendCredential.meta("token"), "01TESTTRACE0000000000000A", recipients(size)),
                 () -> { });
     }
 

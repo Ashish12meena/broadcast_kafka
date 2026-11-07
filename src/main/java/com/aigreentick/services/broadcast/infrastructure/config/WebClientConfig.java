@@ -11,6 +11,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 
+import java.time.Duration;
+
 /**
  * The HTTP client for Meta.
  *
@@ -35,23 +37,35 @@ public class WebClientConfig {
     @Bean
     public WebClient metaWebClient(BroadcastProperties properties) {
         BroadcastProperties.Meta meta = properties.meta();
+        return build(DomainConstants.Meta.CONNECTION_POOL_NAME, meta.baseUrl(), meta.connectTimeout(),
+                meta.readTimeout(), meta.maxConnections(), meta.pendingAcquireTimeout(), meta.idleTimeout());
+    }
 
+    /**
+     * A client for one provider, with its own explicitly sized connection pool — Meta's above, and
+     * each BSP's ({@code broadcast.providers.<code>}, built by its {@code SendEndpoint}). Separate
+     * pools so a slow BSP cannot take connections from Meta sends, or the other way round.
+     *
+     * @param poolName what the pool's metrics are tagged with
+     */
+    public static WebClient build(String poolName, String baseUrl, Duration connectTimeout, Duration readTimeout,
+                                  int maxConnections, Duration pendingAcquireTimeout, Duration idleTimeout) {
         ConnectionProvider connectionProvider =
-                ConnectionProvider.builder(DomainConstants.Meta.CONNECTION_POOL_NAME)
-                .maxConnections(meta.maxConnections())
-                .pendingAcquireMaxCount(meta.maxConnections() * PENDING_ACQUIRE_MULTIPLIER)
-                .pendingAcquireTimeout(meta.pendingAcquireTimeout())
-                .maxIdleTime(meta.idleTimeout())
+                ConnectionProvider.builder(poolName)
+                .maxConnections(maxConnections)
+                .pendingAcquireMaxCount(maxConnections * PENDING_ACQUIRE_MULTIPLIER)
+                .pendingAcquireTimeout(pendingAcquireTimeout)
+                .maxIdleTime(idleTimeout)
                 .metrics(true)
                 .build();
 
         HttpClient httpClient = HttpClient.create(connectionProvider)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) meta.connectTimeout().toMillis())
-                .responseTimeout(meta.readTimeout())
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) connectTimeout.toMillis())
+                .responseTimeout(readTimeout)
                 .compress(true);
 
         return WebClient.builder()
-                .baseUrl(meta.baseUrl())
+                .baseUrl(baseUrl)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .codecs(codecs -> codecs.defaultCodecs()

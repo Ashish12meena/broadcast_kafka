@@ -1,9 +1,10 @@
 package com.aigreentick.services.broadcast.application.port.out;
 
+import com.aigreentick.services.broadcast.domain.model.SendCredential;
 import com.aigreentick.services.broadcast.domain.model.SendResponse;
 
 /**
- * Sends one message to Meta.
+ * Sends one message to Meta — directly, or through the BSP the batch's credential names (doc 47 R3).
  *
  * <p>Implementations never throw. A failed send is a returned {@link SendResponse}, so one bad
  * recipient cannot abort the others being sent alongside it.
@@ -15,5 +16,5 @@ import com.aigreentick.services.broadcast.domain.model.SendResponse;
 public interface MetaSendPort {
 
     SendResponse send(
-            String phoneNumberId, Long wabaAccountId, String accessToken, String requestPayload);
+            String phoneNumberId, Long wabaAccountId, SendCredential credential, String requestPayload);
 }

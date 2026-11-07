@@ -1,6 +1,7 @@
 package com.aigreentick.services.broadcast.infrastructure.meta.simulator;
 
 import com.aigreentick.services.broadcast.common.constants.DomainConstants;
+import com.aigreentick.services.broadcast.domain.model.SendCredential;
 import com.aigreentick.services.broadcast.common.util.LogSafe;
 import com.aigreentick.services.broadcast.common.constants.InfraConstants;
 import com.aigreentick.services.broadcast.application.port.out.MetaSendPort;
@@ -58,7 +59,8 @@ public class SimulatedMetaClient implements MetaSendPort {
 
     @Override
     public SendResponse send(
-            String phoneNumberId, Long wabaAccountId, String accessToken, String requestPayload) {
+            String phoneNumberId, Long wabaAccountId, SendCredential credential, String requestPayload) {
+        // Stands in for every provider: under the test profile nothing reaches Meta or a BSP.
         try {
             String wamid = generateWamid();
             String recipient = extractRecipient(requestPayload);

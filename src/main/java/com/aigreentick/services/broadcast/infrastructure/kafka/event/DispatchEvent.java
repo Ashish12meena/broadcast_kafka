@@ -1,5 +1,6 @@
 package com.aigreentick.services.broadcast.infrastructure.kafka.event;
 
+import com.aigreentick.services.broadcast.domain.model.SendCredential;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.util.List;
@@ -23,6 +24,12 @@ import java.util.List;
  * "where did the other two hundred go" a single grep. It is propagated into MDC on receipt and back
  * out on the result event.
  *
+ * <h2>{@code provider}, {@code bspApiKey}, {@code bspAccountId} (doc 47 R3)</h2>
+ * The route the Messaging Service decided: {@code META_DIRECT} (or absent, from a producer older than
+ * R3) sends through Meta with {@code accessToken}; a BSP code such as {@code PINNACLE} sends through
+ * that BSP with {@code bspApiKey}. The key is a second live credential on the topic, with the same
+ * caveat as the token. {@link #toString()} redacts both.
+ *
  * @param validationError set by the producer when it knows the batch is unsendable; the listener
  *                        dead-letters rather than attempting it
  */
@@ -34,7 +41,10 @@ public record DispatchEvent(
         String accessToken,
         String traceId,
         List<Payload> payloads,
-        String validationError) {
+        String validationError,
+        String provider,
+        String bspApiKey,
+        String bspAccountId) {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Payload(
@@ -50,5 +60,20 @@ public record DispatchEvent(
 
     public int size() {
         return payloads == null ? 0 : payloads.size();
+    }
+
+    /** The route this batch is sent through; no provider means Meta. */
+    public SendCredential credential() {
+        return new SendCredential(provider, accessToken, bspApiKey, bspAccountId);
+    }
+
+    /** A record prints every component; this one carries two live credentials. */
+    @Override
+    public String toString() {
+        return "DispatchEvent[campaignId=" + campaignId + ", phoneNumberId=" + phoneNumberId
+                + ", wabaAccountId=" + wabaAccountId + ", provider=" + provider + ", traceId=" + traceId
+                + ", payloads=" + size() + ", validationError=" + validationError
+                + ", accessToken=" + (accessToken == null ? null : "***")
+                + ", bspApiKey=" + (bspApiKey == null ? null : "***") + "]";
     }
 }

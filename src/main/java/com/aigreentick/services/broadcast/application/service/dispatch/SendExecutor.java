@@ -196,7 +196,7 @@ public class SendExecutor {
             SendResponse response = metaSend.send(
                     phoneNumberId,
                     send.batch().batch().wabaAccountId(),
-                    send.batch().batch().accessToken(),
+                    send.batch().batch().credential(),
                     send.recipient().requestPayload());
 
             Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);

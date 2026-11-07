@@ -114,6 +114,18 @@ broadcast:
     pending-acquire-timeout: 5s
     idle-timeout: 30s
 
+  # BSP send providers (doc 47 R3). The Messaging Service decides each batch's route and puts it on
+  # the batch; these blocks only say how to reach each BSP. Meta is broadcast.meta above.
+  # A new BSP is a new block here plus one SendEndpoint class (doc 47 section 4.7).
+  providers:
+    pinnacle:
+      base-url: ${PINNACLE_PARTNER_API_URL:${PINNACLE_PARTNER_BASE_URL:https://partnersv1.pinbot.ai}/v3}
+      connect-timeout: 3s
+      read-timeout: 15s
+      max-connections: 32
+      pending-acquire-timeout: 5s
+      idle-timeout: 30s
+
   retry:
     max-attempts: 3
     base-backoff: 500ms

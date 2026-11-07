@@ -121,7 +121,7 @@ public class DispatchEventListener {
                 event.campaignId(),
                 event.phoneNumberId(),
                 event.wabaAccountId(),
-                event.accessToken(),
+                event.credential(),
                 event.traceId(),
                 recipients);
     }
